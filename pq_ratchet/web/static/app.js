@@ -106,6 +106,10 @@
         onChatCleared(data);
         break;
 
+      case "peer_disconnected":
+        onPeerDisconnected(data);
+        break;
+
       case "session_expired":
         handleSessionTermination("Your 1-hour session has expired.");
         break;
@@ -114,6 +118,26 @@
         showToast(data.message, true);
         break;
     }
+  }
+
+  // Peer Disconnected Handler
+  function onPeerDisconnected(data) {
+    activePeer = null;
+    displayPeerStatus.textContent = "Offline";
+    displayPeerName.textContent = "Direct Chat";
+    headerAvatar.textContent = "?";
+    btnClearChat.classList.add("hidden");
+    chatInput.disabled = true;
+    btnSendMessage.disabled = true;
+    chatInput.placeholder = "Peer disconnected.";
+    peerPairingBox.classList.remove("hidden");
+    showToast(data.message || "Peer disconnected", true);
+
+    const notice = document.createElement("div");
+    notice.className = "system-notice";
+    notice.textContent = "Peer disconnected — ephemeral session zeroized";
+    messagesList.appendChild(notice);
+    scrollToBottom();
   }
 
   // Handshake Complete
@@ -188,14 +212,22 @@
     onlineUsersList.innerHTML = "";
 
     if (peers.length === 0) {
-      onlineUsersList.innerHTML = '<span class="empty-hint">No other users online yet</span>';
+      const hint = document.createElement("span");
+      hint.className = "empty-hint";
+      hint.textContent = "No other users online yet";
+      onlineUsersList.appendChild(hint);
       return;
     }
 
     peers.forEach(p => {
       const btn = document.createElement("button");
       btn.className = "peer-chip-btn";
-      btn.innerHTML = `<span class="dot"></span> <span>${escapeHtml(p.username)}</span>`;
+      const dot = document.createElement("span");
+      dot.className = "dot";
+      const name = document.createElement("span");
+      name.textContent = p.username;
+      btn.appendChild(dot);
+      btn.appendChild(name);
       btn.onclick = () => {
         targetPeerInput.value = p.username;
         targetPeerInput.focus();

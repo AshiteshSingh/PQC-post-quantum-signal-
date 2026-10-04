@@ -6,6 +6,7 @@ Zero IP logging, zero disk persistence, 1-hour strict TTL peer registry.
 
 import os
 import sys
+import re
 import json
 import time
 import asyncio
@@ -61,6 +62,13 @@ class ZeroTraceMiddleware(BaseHTTPMiddleware):
             "object-src 'none'; "
             "base-uri 'none';"
         )
+
+        # Transport & Execution Environment Isolation (Anti-Spectre & Anti-SSL-Strip)
+        response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains; preload"
+        response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+        response.headers["Cross-Origin-Embedder-Policy"] = "require-corp"
+        response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
 
         if "server" in response.headers:
             del response.headers["server"]
@@ -138,6 +146,18 @@ async def list_online_users():
     return JSONResponse({"users": users_info})
 
 
+async def safe_send_json(ws: WebSocket, payload: dict) -> bool:
+    """Safely dispatches JSON payload, mitigating socket crash cascading."""
+    try:
+        await ws.send_text(json.dumps(payload))
+        return True
+    except Exception:
+        return False
+
+
+USERNAME_REGEX = re.compile(r"^[a-zA-Z0-9_-]{2,25}$")
+
+
 @app.websocket("/ws/{username}")
 async def websocket_endpoint(websocket: WebSocket, username: str):
     # Cross-Site WebSocket Hijacking (CSWSH) Mitigation
@@ -145,7 +165,13 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
     host = websocket.headers.get("host")
     if origin:
         parsed_origin = urlparse(origin).netloc.lower()
-        if host and parsed_origin != host.lower() and parsed_origin not in ("localhost", "127.0.0.1", "testserver"):
+        allowed = {"localhost", "127.0.0.1", "testserver"}
+        if host:
+            allowed.add(host.lower())
+            if ":" in host:
+                allowed.add(host.split(":")[0].lower())
+        origin_host = parsed_origin.split(":")[0].lower() if ":" in parsed_origin else parsed_origin
+        if parsed_origin not in allowed and origin_host not in allowed:
             await websocket.close(code=1008)
             return
 
@@ -153,24 +179,27 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
     cleanup_expired_sessions()
 
     if len(online_users) >= MAX_CONCURRENT_USERS:
-        await websocket.send_text(json.dumps({"type": "error", "message": "Server at maximum capacity. Try later."}))
+        await safe_send_json(websocket, {"type": "error", "message": "Server at maximum capacity. Try later."})
         await websocket.close(code=1013)
         return
 
     clean_user = username.strip()
-    if not clean_user or len(clean_user) > 25:
-        await websocket.send_text(json.dumps({"type": "error", "message": "Invalid username"}))
-        await websocket.close()
+    if not USERNAME_REGEX.match(clean_user):
+        await safe_send_json(websocket, {
+            "type": "error",
+            "message": "Username must be 2-25 characters (alphanumeric, underscore, hyphen only).",
+        })
+        await websocket.close(code=1008)
         return
 
     # Check username availability
     if clean_user in online_users:
         existing = online_users[clean_user]
         if not existing.is_expired():
-            await websocket.send_text(json.dumps({
+            await safe_send_json(websocket, {
                 "type": "error",
                 "message": f"Username '{clean_user}' is currently active. Choose another handle or wait for expiration.",
-            }))
+            })
             await websocket.close()
             return
         else:
@@ -181,12 +210,12 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
     online_users[clean_user] = session
 
     # Acknowledge connection with 1-hour TTL
-    await websocket.send_text(json.dumps({
+    await safe_send_json(websocket, {
         "type": "session_registered",
         "username": clean_user,
         "ttl": session.time_remaining(),
         "fingerprint": f"mldsa65:{session.identity.public_key().to_bytes()[:8].hex()}...",
-    }))
+    })
 
     try:
         while True:
@@ -194,42 +223,57 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
 
             # Exploit & DoS Mitigation: Hard payload size ceiling (32 KiB)
             if len(raw.encode("utf-8")) > MAX_PAYLOAD_BYTES:
-                await websocket.send_text(json.dumps({"type": "error", "message": "Payload size limit exceeded (32 KiB max)"}))
+                await safe_send_json(websocket, {"type": "error", "message": "Payload size limit exceeded (32 KiB max)"})
                 continue
 
             # Exploit & DoS Mitigation: Per-connection rate limiting
             if not session.check_rate_limit(max_per_second=15):
-                await websocket.send_text(json.dumps({"type": "error", "message": "Rate limit exceeded (max 15 req/sec)"}))
+                await safe_send_json(websocket, {"type": "error", "message": "Rate limit exceeded (max 15 req/sec)"})
                 continue
 
             if session.is_expired():
-                await websocket.send_text(json.dumps({
+                await safe_send_json(websocket, {
                     "type": "session_expired",
                     "message": "Your 1-hour ephemeral session has expired. Keys zeroized.",
-                }))
+                })
                 break
 
-            data = json.loads(raw)
+            # Robust JSON decoding against malformed frame crashes
+            try:
+                data = json.loads(raw)
+            except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
+                await safe_send_json(websocket, {"type": "error", "message": "Malformed JSON frame"})
+                continue
+
+            if not isinstance(data, dict):
+                await safe_send_json(websocket, {"type": "error", "message": "Payload must be a JSON object"})
+                continue
+
             action = data.get("action")
 
             # Action 1: Add/Call another user by username
             if action == "connect_peer":
-                target_username = data.get("target", "").strip()
+                raw_target = data.get("target")
+                if not isinstance(raw_target, str):
+                    await safe_send_json(websocket, {"type": "error", "message": "Invalid target username"})
+                    continue
+                target_username = raw_target.strip()
+
                 if target_username == clean_user:
-                    await websocket.send_text(json.dumps({
+                    await safe_send_json(websocket, {
                         "type": "error",
                         "message": "You cannot start a session with yourself.",
-                    }))
+                    })
                     continue
 
                 cleanup_expired_sessions()
                 target_sess = online_users.get(target_username)
 
                 if not target_sess or target_sess.is_expired():
-                    await websocket.send_text(json.dumps({
+                    await safe_send_json(websocket, {
                         "type": "error",
                         "message": f"User '{target_username}' is offline or their 1-hour session expired.",
-                    }))
+                    })
                     continue
 
                 # Execute mutual post-quantum handshake
@@ -272,34 +316,37 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                         "bits": 192,
                     }
 
-                    await websocket.send_text(json.dumps(hs_data_a))
-                    await target_sess.ws.send_text(json.dumps(hs_data_b))
+                    await safe_send_json(websocket, hs_data_a)
+                    await safe_send_json(target_sess.ws, hs_data_b)
 
                 except Exception as e:
-                    await websocket.send_text(json.dumps({
+                    await safe_send_json(websocket, {
                         "type": "error",
                         "message": f"Post-Quantum handshake failure: {str(e)}",
-                    }))
+                    })
 
             # Action 2: Send encrypted chat message
             elif action == "send_message":
                 if not session.active_peer or not session.ratchet_session:
-                    await websocket.send_text(json.dumps({
+                    await safe_send_json(websocket, {
                         "type": "error",
                         "message": "No active post-quantum session established with a peer.",
-                    }))
+                    })
                     continue
 
                 target_sess = online_users.get(session.active_peer)
                 if not target_sess or not target_sess.ratchet_session:
-                    await websocket.send_text(json.dumps({
+                    await safe_send_json(websocket, {
                         "type": "error",
                         "message": f"Peer '{session.active_peer}' disconnected or session expired.",
-                    }))
+                    })
                     continue
 
-                text = data.get("text", "").strip()
-                if not text:
+                raw_text = data.get("text")
+                if not isinstance(raw_text, str):
+                    continue
+                text = raw_text.strip()
+                if not text or len(text) > 4000:
                     continue
 
                 # Encrypt with ML-KEM-768 KEM Double Ratchet
@@ -326,9 +373,9 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                     },
                 }
 
-                # Transmit to both endpoints
-                await websocket.send_text(json.dumps(msg_out))
-                await target_sess.ws.send_text(json.dumps(msg_out))
+                # Transmit to both endpoints safely
+                await safe_send_json(websocket, msg_out)
+                await safe_send_json(target_sess.ws, msg_out)
 
             # Action 3: Mutual Instant Clear Chat
             elif action == "clear_chat":
@@ -353,12 +400,21 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                     "timestamp": time.strftime("%H:%M:%S"),
                 }
 
-                await websocket.send_text(json.dumps(wipe_msg))
+                await safe_send_json(websocket, wipe_msg)
                 if target_sess and target_sess.ws:
-                    await target_sess.ws.send_text(json.dumps(wipe_msg))
+                    await safe_send_json(target_sess.ws, wipe_msg)
 
     except WebSocketDisconnect:
         pass
     finally:
+        if session.active_peer:
+            target_sess = online_users.get(session.active_peer)
+            if target_sess and target_sess.ws:
+                target_sess.active_peer = None
+                target_sess.ratchet_session = None
+                await safe_send_json(target_sess.ws, {
+                    "type": "peer_disconnected",
+                    "message": f"Peer '{clean_user}' disconnected. Session closed.",
+                })
         session.close_and_zeroize()
         online_users.pop(clean_user, None)

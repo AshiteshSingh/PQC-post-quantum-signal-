@@ -122,7 +122,53 @@ class TestEphemeralWebPQRatchet(unittest.TestCase):
             self.assertEqual(err["type"], "error")
             self.assertIn("32 KiB", err["message"])
 
+    def test_invalid_username_rejected(self):
+        # Username containing spaces or illegal script characters must be rejected
+        with self.assertRaises(Exception):
+            with self.client.websocket_connect("/ws/<script>alert(1)</script>") as ws:
+                ws.receive_text()
+
+    def test_malformed_json_frame_resilience(self):
+        with self.client.websocket_connect("/ws/Frank") as ws_frank:
+            json.loads(ws_frank.receive_text())  # registration
+
+            # Send raw non-JSON text -> should return error, NOT crash socket
+            ws_frank.send_text("NOT_JSON_AT_ALL{{{")
+            err = json.loads(ws_frank.receive_text())
+            self.assertEqual(err["type"], "error")
+            self.assertIn("Malformed JSON", err["message"])
+
+            # Send a JSON array instead of a dict
+            ws_frank.send_text("[1, 2, 3]")
+            err2 = json.loads(ws_frank.receive_text())
+            self.assertEqual(err2["type"], "error")
+
+    def test_peer_disconnection_notification(self):
+        with self.client.websocket_connect("/ws/PeerA") as ws_a:
+            json.loads(ws_a.receive_text())
+            with self.client.websocket_connect("/ws/PeerB") as ws_b:
+                json.loads(ws_b.receive_text())
+
+                # Pair them
+                ws_a.send_text(json.dumps({"action": "connect_peer", "target": "PeerB"}))
+                json.loads(ws_a.receive_text())
+                json.loads(ws_b.receive_text())
+
+            # PeerB disconnected (exited context)
+            disc_msg = json.loads(ws_a.receive_text())
+            self.assertEqual(disc_msg["type"], "peer_disconnected")
+            self.assertIn("PeerB", disc_msg["message"])
+
+    def test_advanced_security_headers(self):
+        resp = self.client.get("/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("max-age=63072000", resp.headers.get("Strict-Transport-Security", ""))
+        self.assertEqual(resp.headers.get("Cross-Origin-Opener-Policy"), "same-origin")
+        self.assertEqual(resp.headers.get("Cross-Origin-Embedder-Policy"), "require-corp")
+        self.assertIn("camera=()", resp.headers.get("Permissions-Policy", ""))
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

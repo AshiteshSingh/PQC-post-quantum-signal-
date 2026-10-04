@@ -246,6 +246,9 @@ def main():
     p_web = subparsers.add_parser("web", help="Launch interactive Post-Quantum Web Chat GUI")
     p_web.add_argument("--host", default="0.0.0.0", help="Binding host (default: 0.0.0.0)")
     p_web.add_argument("--port", type=int, default=8000, help="Port to listen on (default: 8000)")
+    p_web.add_argument("--ssl-keyfile", default=None, help="SSL private key file path for HTTPS / WSS")
+    p_web.add_argument("--ssl-certfile", default=None, help="SSL certificate file path for HTTPS / WSS")
+    p_web.add_argument("--tls", action="store_true", help="Generate ephemeral self-signed TLS cert for instant HTTPS/WSS")
 
     args = parser.parse_args()
 
@@ -301,9 +304,30 @@ def main():
     elif args.subcommand == "web":
         import uvicorn
         from pq_ratchet.web.app import app
-        print(f"\n[+] Launching Post-Quantum Secure Web Chat at http://localhost:{args.port}")
-        print(f"[+] Share room links across your local network to chat in real time.\n")
-        uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+
+        ssl_keyfile = args.ssl_keyfile
+        ssl_certfile = args.ssl_certfile
+
+        if args.tls and (not ssl_keyfile or not ssl_certfile):
+            from pq_ratchet.web.tls import generate_ephemeral_tls_cert
+            cert_p, key_p = generate_ephemeral_tls_cert(args.host if args.host != "0.0.0.0" else "127.0.0.1")
+            ssl_certfile = cert_p
+            ssl_keyfile = key_p
+            print("[+] Generated ephemeral zero-trace TLS certificate for HTTPS/WSS encryption.")
+
+        proto = "https" if ssl_certfile else "http"
+        print(f"\n[+] Launching Post-Quantum Secure Web Chat at {proto}://localhost:{args.port}")
+        print(f"[+] Zero IP retention, zero disk storage, 1-hour ephemeral registry.\n")
+
+        uvicorn.run(
+            app,
+            host=args.host,
+            port=args.port,
+            ssl_keyfile=ssl_keyfile,
+            ssl_certfile=ssl_certfile,
+            access_log=False,
+            log_level="warning",
+        )
 
 
 if __name__ == "__main__":
