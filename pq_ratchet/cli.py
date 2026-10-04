@@ -242,6 +242,11 @@ def main():
     # benchmark
     subparsers.add_parser("benchmark", help="Run comprehensive cryptographic benchmark")
 
+    # web
+    p_web = subparsers.add_parser("web", help="Launch interactive Post-Quantum Web Chat GUI")
+    p_web.add_argument("--host", default="0.0.0.0", help="Binding host (default: 0.0.0.0)")
+    p_web.add_argument("--port", type=int, default=8000, help="Port to listen on (default: 8000)")
+
     args = parser.parse_args()
 
     if args.subcommand == "keygen":
@@ -292,6 +297,13 @@ def main():
     elif args.subcommand == "benchmark":
         from benchmarks.benchmark_ratchet import run_benchmarks
         run_benchmarks()
+
+    elif args.subcommand == "web":
+        import uvicorn
+        from pq_ratchet.web.app import app
+        print(f"\n[+] Launching Post-Quantum Secure Web Chat at http://localhost:{args.port}")
+        print(f"[+] Share room links across your local network to chat in real time.\n")
+        uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
 
 if __name__ == "__main__":

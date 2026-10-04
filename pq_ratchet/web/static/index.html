@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PQ-Ratchet | Post-Quantum E2EE Communication</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="dark-theme">
+  <!-- Dynamic Glowing Quantum Mesh Background -->
+  <div class="mesh-bg" aria-hidden="true"></div>
+
+  <!-- Top Navigation & Cryptographic Telemetry Bar -->
+  <header class="navbar" id="main-header">
+    <div class="nav-left">
+      <div class="brand-logo">
+        <svg class="atom-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(30 12 12)"></ellipse>
+          <ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(90 12 12)"></ellipse>
+          <ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(150 12 12)"></ellipse>
+          <circle cx="12" cy="12" r="2.5" fill="currentColor"></circle>
+        </svg>
+        <div class="brand-text">
+          <span class="brand-title">PQ-Ratchet</span>
+          <span class="brand-sub">FIPS 203 / 204</span>
+        </div>
+      </div>
+      
+      <div class="security-badge" id="security-indicator" title="Protected against FTQC Shor's algorithm">
+        <span class="status-dot pulsing" id="status-beacon"></span>
+        <span id="security-status-text">Handshake Pending</span>
+      </div>
+    </div>
+
+    <div class="nav-center">
+      <div class="room-chip" id="room-chip" title="Click to copy invite link">
+        <span class="chip-label">ROOM:</span>
+        <span class="chip-val" id="display-room-id">lobby</span>
+        <button class="icon-btn-micro" id="btn-copy-room" title="Copy room link">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="nav-right">
+      <button class="nav-btn clear-btn" id="btn-clear-chat" title="Permanently wipes chat history from both devices">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="3 6 5 6 21 6"></polyline>
+          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+          <line x1="10" y1="11" x2="10" y2="17"></line>
+          <line x1="14" y1="11" x2="14" y2="17"></line>
+        </svg>
+        <span>Clear Chat for Both</span>
+      </button>
+
+      <button class="nav-btn inspector-toggle" id="btn-toggle-inspector" title="Toggle Quantum Telemetry Inspector">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+          <polyline points="2 17 12 22 22 17"></polyline>
+          <polyline points="2 12 12 17 22 12"></polyline>
+        </svg>
+        <span>Telemetry</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Viewport -->
+  <main class="chat-layout">
+    <!-- Messages Container -->
+    <section class="messages-viewport" id="messages-container">
+      <div class="session-hero" id="session-hero">
+        <div class="shield-badge">
+          <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+          </svg>
+        </div>
+        <h2>Quantum-Immune E2EE Channel</h2>
+        <p>Continuous Key Encapsulation Ratchet powered by <strong>ML-KEM-768</strong> (Module-LWE) and <strong>ML-DSA-65</strong> signatures.</p>
+        <div class="handshake-specs" id="handshake-specs-box">
+          <div class="spec-row">
+            <span class="spec-name">Peer A Identity:</span>
+            <span class="spec-val" id="spec-peer-1">Connecting...</span>
+          </div>
+          <div class="spec-row">
+            <span class="spec-name">Peer B Identity:</span>
+            <span class="spec-val" id="spec-peer-2">Waiting for second peer...</span>
+          </div>
+          <div class="spec-row">
+            <span class="spec-name">Security Margin:</span>
+            <span class="spec-val highlight-val">192-bit Quantum Resilience (Harvest-Now-Decrypt-Later Immune)</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Live Messages Flow Here -->
+      <div class="messages-list" id="messages-list"></div>
+    </section>
+
+    <!-- Side Telemetry Drawer (Quantum Wire Inspector) -->
+    <aside class="telemetry-panel" id="telemetry-drawer">
+      <div class="drawer-header">
+        <h3>Quantum Inspector</h3>
+        <button class="close-btn" id="btn-close-drawer">&times;</button>
+      </div>
+      <div class="drawer-content">
+        <div class="telemetry-card">
+          <span class="telemetry-label">Key Encapsulation Primitive</span>
+          <span class="telemetry-value text-accent">NIST FIPS 203 (ML-KEM-768)</span>
+          <span class="telemetry-sub">Module-LWE (k=3, q=3329)</span>
+        </div>
+        <div class="telemetry-card">
+          <span class="telemetry-label">Identity Signature</span>
+          <span class="telemetry-value text-accent">NIST FIPS 204 (ML-DSA-65)</span>
+          <span class="telemetry-sub">Module-SIS (Level 3 EUF-CMA)</span>
+        </div>
+        <div class="telemetry-card">
+          <span class="telemetry-label">Hybrid Classical Fallback</span>
+          <span class="telemetry-value">RFC 7748 (Curve25519)</span>
+          <span class="telemetry-sub">Dual-PRF HKDF-SHA3-512 Combiner</span>
+        </div>
+        <div class="telemetry-card">
+          <span class="telemetry-label">Current Epoch & Sequence</span>
+          <div class="stat-grid">
+            <div>
+              <span class="stat-number" id="stat-epoch">0</span>
+              <span class="stat-title">Epoch (KEM Turn)</span>
+            </div>
+            <div>
+              <span class="stat-number" id="stat-seq">0</span>
+              <span class="stat-title">Message Seq</span>
+            </div>
+          </div>
+        </div>
+        <div class="telemetry-card">
+          <span class="telemetry-label">Last Exchanged KEM Ciphertext</span>
+          <span class="telemetry-value" id="stat-kem-bytes">1,120 Bytes</span>
+          <span class="telemetry-sub">Piggybacked on asymmetric ratchet turns</span>
+        </div>
+        <div class="telemetry-card">
+          <span class="telemetry-label">Active Symmetric AEAD</span>
+          <span class="telemetry-value">ChaCha20-Poly1305</span>
+          <span class="telemetry-sub" id="stat-aead-tag">MAC Tag: None</span>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <!-- Bottom Message Input Composer -->
+  <footer class="composer-bar">
+    <div class="composer-container">
+      <input 
+        type="text" 
+        id="chat-input" 
+        class="chat-input" 
+        placeholder="Type a quantum-encrypted message..." 
+        autocomplete="off" 
+        disabled
+      >
+      <button class="send-btn" id="btn-send-message" disabled>
+        <span>Send</span>
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="22" y1="2" x2="11" y2="13"></line>
+          <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+        </svg>
+      </button>
+    </div>
+    <div class="composer-footer-text">
+      <span>Authenticated & Protected by Post-Quantum Lattice Cryptography</span>
+    </div>
+  </footer>
+
+  <!-- Initial User Onboarding Modal -->
+  <div class="modal-backdrop" id="join-modal">
+    <div class="modal-card">
+      <div class="modal-badge">
+        <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+        </svg>
+      </div>
+      <h2>Join Quantum Session</h2>
+      <p class="modal-subtitle">Generate your ephemeral ML-DSA-65 identity and establish an IND-CCA2 post-quantum channel.</p>
+
+      <form id="join-form">
+        <div class="form-group">
+          <label for="input-username">Your Call-Sign / Handle</label>
+          <input type="text" id="input-username" class="form-input" placeholder="e.g. Alice" required autofocus maxlength="20">
+        </div>
+        <div class="form-group">
+          <label for="input-room">Quantum Room ID</label>
+          <input type="text" id="input-room" class="form-input" placeholder="lobby" value="lobby" required maxlength="30">
+        </div>
+        <button type="submit" class="submit-btn" id="btn-join-session">
+          <span>Initialize Quantum State</span>
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Notification Toast Container -->
+  <div class="toast-stack" id="toast-stack"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
