@@ -18,25 +18,50 @@ from starlette.middleware.base import BaseHTTPMiddleware
 # Ensure repository root is on sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
+from urllib.parse import urlparse
 from pq_ratchet.primitives.identity import IdentityPrivateKey
 from pq_ratchet.core.ratchet import PQRatchetSession
 from pq_ratchet.core.framing import RatchetDataPacket
 
 SESSION_TTL_SECONDS = 3600  # Strict 1-Hour Ephemeral Lifetime
+MAX_CONCURRENT_USERS = 256  # Hard memory allocation ceiling
+MAX_PAYLOAD_BYTES = 32768   # 32 KiB strict DoS payload ceiling
 
 
 class ZeroTraceMiddleware(BaseHTTPMiddleware):
     """
-    Strips client IP addresses and privacy-leaking headers from requests and responses.
-    Ensures zero client IP retention in memory or server logs.
+    Hardened Zero-Trace Anti-Forensics & Exploit Mitigation Middleware.
+    - Masks client IP addresses to 0.0.0.0.
+    - Enforces strict Content Security Policy (CSP) preventing XSS/injection.
+    - Enforces clickjacking prevention and anti-caching directives.
     """
     async def dispatch(self, request, call_next):
-        # Override client IP representation
+        # Mask client IP completely
         request.scope["client"] = ("0.0.0.0", 0)
         response = await call_next(request)
+
+        # Anti-Forensic & Anti-Cache Headers
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        response.headers["Referrer-Policy"] = "no-referrer"
+
+        # Exploit Mitigation & Strict CSP
         response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self'; "
+            "style-src 'self'; "
+            "connect-src 'self' ws: wss:; "
+            "img-src 'self' data:; "
+            "font-src 'self'; "
+            "frame-ancestors 'none'; "
+            "object-src 'none'; "
+            "base-uri 'none';"
+        )
+
         if "server" in response.headers:
             del response.headers["server"]
         return response
@@ -58,12 +83,21 @@ class UserSession:
         self.identity = IdentityPrivateKey.generate()
         self.active_peer: Optional[str] = None
         self.ratchet_session: Optional[PQRatchetSession] = None
+        self._msg_timestamps: list = []
 
     def is_expired(self) -> bool:
         return time.time() >= self.expires_at
 
     def time_remaining(self) -> int:
         return max(0, int(self.expires_at - time.time()))
+
+    def check_rate_limit(self, max_per_second: int = 15) -> bool:
+        now = time.time()
+        self._msg_timestamps = [t for t in self._msg_timestamps if now - t < 1.0]
+        if len(self._msg_timestamps) >= max_per_second:
+            return False
+        self._msg_timestamps.append(now)
+        return True
 
     def close_and_zeroize(self) -> None:
         if self.ratchet_session is not None:
@@ -106,8 +140,22 @@ async def list_online_users():
 
 @app.websocket("/ws/{username}")
 async def websocket_endpoint(websocket: WebSocket, username: str):
+    # Cross-Site WebSocket Hijacking (CSWSH) Mitigation
+    origin = websocket.headers.get("origin")
+    host = websocket.headers.get("host")
+    if origin:
+        parsed_origin = urlparse(origin).netloc.lower()
+        if host and parsed_origin != host.lower() and parsed_origin not in ("localhost", "127.0.0.1", "testserver"):
+            await websocket.close(code=1008)
+            return
+
     await websocket.accept()
     cleanup_expired_sessions()
+
+    if len(online_users) >= MAX_CONCURRENT_USERS:
+        await websocket.send_text(json.dumps({"type": "error", "message": "Server at maximum capacity. Try later."}))
+        await websocket.close(code=1013)
+        return
 
     clean_user = username.strip()
     if not clean_user or len(clean_user) > 25:
@@ -143,6 +191,17 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
     try:
         while True:
             raw = await websocket.receive_text()
+
+            # Exploit & DoS Mitigation: Hard payload size ceiling (32 KiB)
+            if len(raw.encode("utf-8")) > MAX_PAYLOAD_BYTES:
+                await websocket.send_text(json.dumps({"type": "error", "message": "Payload size limit exceeded (32 KiB max)"}))
+                continue
+
+            # Exploit & DoS Mitigation: Per-connection rate limiting
+            if not session.check_rate_limit(max_per_second=15):
+                await websocket.send_text(json.dumps({"type": "error", "message": "Rate limit exceeded (max 15 req/sec)"}))
+                continue
+
             if session.is_expired():
                 await websocket.send_text(json.dumps({
                     "type": "session_expired",

@@ -104,6 +104,25 @@ class TestEphemeralWebPQRatchet(unittest.TestCase):
             exp_msg = json.loads(ws_charlie.receive_text())
             self.assertEqual(exp_msg["type"], "session_expired")
 
+    def test_cswsh_cross_origin_rejected(self):
+        with self.assertRaises(Exception):
+            with self.client.websocket_connect(
+                "/ws/Eve",
+                headers={"origin": "https://malicious-attacker.com", "host": "localhost:8000"},
+            ) as ws_eve:
+                ws_eve.receive_text()
+
+    def test_payload_ceiling(self):
+        with self.client.websocket_connect("/ws/Dave") as ws_dave:
+            json.loads(ws_dave.receive_text())  # registration
+
+            giant_payload = json.dumps({"action": "send_message", "text": "A" * 35000})
+            ws_dave.send_text(giant_payload)
+            err = json.loads(ws_dave.receive_text())
+            self.assertEqual(err["type"], "error")
+            self.assertIn("32 KiB", err["message"])
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -315,4 +315,20 @@
     div.textContent = str;
     return div.innerHTML;
   }
+
+  // Anti-Forensics: Zeroize RAM on window close or tab backgrounding
+  function zeroizeVolatileState() {
+    for (let i = 0; i < volatileMessageHeap.length; i++) {
+      if (volatileMessageHeap[i]) {
+        volatileMessageHeap[i].text = "";
+        volatileMessageHeap[i].sender = "";
+      }
+    }
+    volatileMessageHeap.length = 0;
+    if (chatInput) chatInput.value = "";
+    if (messagesList) messagesList.innerHTML = "";
+  }
+
+  window.addEventListener("beforeunload", zeroizeVolatileState);
+  window.addEventListener("pagehide", zeroizeVolatileState);
 })();
