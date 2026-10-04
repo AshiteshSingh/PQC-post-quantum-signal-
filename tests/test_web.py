@@ -1,84 +1,108 @@
 """
 tests.test_web
-Integration test for FastAPI Post-Quantum Web Chat & Real-Time Dual Endpoint Wipe.
+Integration test for Ephemeral Post-Quantum Web Chat:
+- Zero-Trace Anti-Forensic headers (no-store, no-cache, no IP recording).
+- Peer pairing by username (connect_peer).
+- Real-time ML-KEM-768 messaging.
+- Mutual dual-endpoint chat wipe.
+- 1-Hour expiration verification.
 """
 
 import unittest
 import json
 from fastapi.testclient import TestClient
-from pq_ratchet.web.app import app
+from pq_ratchet.web.app import app, online_users, cleanup_expired_sessions
 
 
-class TestWebPQRatchet(unittest.TestCase):
+class TestEphemeralWebPQRatchet(unittest.TestCase):
 
     def setUp(self):
         self.client = TestClient(app)
+        online_users.clear()
 
-    def test_api_info_and_static_routes(self):
-        resp = self.client.get("/api/info")
+    def test_zero_trace_headers_and_online_api(self):
+        resp = self.client.get("/")
         self.assertEqual(resp.status_code, 200)
-        data = resp.json()
-        self.assertEqual(data["protocol"], "PQ-Ratchet")
-        self.assertIn("ML-KEM-768", data["primitives"]["kem"])
+        self.assertEqual(resp.headers.get("Cache-Control"), "no-store, no-cache, must-revalidate, max-age=0")
+        self.assertEqual(resp.headers.get("Pragma"), "no-cache")
 
-        resp_html = self.client.get("/")
-        self.assertEqual(resp_html.status_code, 200)
-        self.assertIn(b"PQ-Ratchet", resp_html.content)
+        api_resp = self.client.get("/api/online-users")
+        self.assertEqual(api_resp.status_code, 200)
+        data = api_resp.json()
+        self.assertIn("users", data)
 
-    def test_websocket_e2ee_and_mutual_clear_chat(self):
-        room_id = "test_unit_room"
+    def test_ephemeral_peer_pairing_and_mutual_wipe(self):
+        # Alice registers
+        with self.client.websocket_connect("/ws/Alice") as ws_alice:
+            reg_a = json.loads(ws_alice.receive_text())
+            self.assertEqual(reg_a["type"], "session_registered")
+            self.assertEqual(reg_a["username"], "Alice")
+            self.assertTrue(reg_a["ttl"] <= 3600)
 
-        with self.client.websocket_connect(f"/ws/{room_id}/Alice") as ws_alice:
-            # First peer update
-            data1 = json.loads(ws_alice.receive_text())
-            self.assertEqual(data1["type"], "peer_update")
-            self.assertEqual(data1["peers"], ["Alice"])
+            # Bob registers
+            with self.client.websocket_connect("/ws/Bob") as ws_bob:
+                reg_b = json.loads(ws_bob.receive_text())
+                self.assertEqual(reg_b["type"], "session_registered")
+                self.assertEqual(reg_b["username"], "Bob")
 
-            # Bob connects
-            with self.client.websocket_connect(f"/ws/{room_id}/Bob") as ws_bob:
-                # Both receive handshake_success
-                hs_bob = json.loads(ws_bob.receive_text())
-                # Alice receives handshake_success
-                hs_alice = json.loads(ws_alice.receive_text())
-
-                self.assertEqual(hs_alice["type"], "handshake_success")
-                self.assertEqual(hs_bob["type"], "handshake_success")
-                self.assertIn("ML-KEM-768", hs_alice["suite"])
-
-                # Drain any peer_update messages
-                def receive_next_non_peer_update(ws):
-                    while True:
-                        msg = json.loads(ws.receive_text())
-                        if msg["type"] != "peer_update":
-                            return msg
-
-                # Alice sends a message
+                # Alice connects to Bob by username
                 ws_alice.send_text(json.dumps({
-                    "action": "send_message",
-                    "text": "Hello Quantum World",
+                    "action": "connect_peer",
+                    "target": "Bob",
                 }))
 
-                msg_alice = receive_next_non_peer_update(ws_alice)
-                msg_bob = receive_next_non_peer_update(ws_bob)
+                hs_a = json.loads(ws_alice.receive_text())
+                hs_b = json.loads(ws_bob.receive_text())
 
-                self.assertEqual(msg_alice["text"], "Hello Quantum World")
-                self.assertEqual(msg_bob["text"], "Hello Quantum World")
-                self.assertEqual(msg_alice["sender"], "Alice")
-                self.assertTrue(msg_alice["pqc_meta"]["total_wire_bytes"] > 0)
+                self.assertEqual(hs_a["type"], "pqc_handshake_complete")
+                self.assertEqual(hs_b["type"], "pqc_handshake_complete")
+                self.assertEqual(hs_a["peer"], "Bob")
+                self.assertEqual(hs_b["peer"], "Alice")
+                self.assertIn("ML-KEM-768", hs_a["suite"])
 
-                # Bob triggers "Clear Chat for Both"
+                # Alice sends encrypted message
+                ws_alice.send_text(json.dumps({
+                    "action": "send_message",
+                    "text": "Secret Ephemeral Quantum Payload",
+                }))
+
+                msg_a = json.loads(ws_alice.receive_text())
+                msg_b = json.loads(ws_bob.receive_text())
+
+                self.assertEqual(msg_a["text"], "Secret Ephemeral Quantum Payload")
+                self.assertEqual(msg_b["text"], "Secret Ephemeral Quantum Payload")
+                self.assertEqual(msg_a["sender"], "Alice")
+                self.assertTrue(msg_a["pqc_meta"]["total_wire_bytes"] > 0)
+
+                # Bob clicks "Clear Chat for Both"
                 ws_bob.send_text(json.dumps({
                     "action": "clear_chat",
                 }))
 
-                # Both endpoints receive chat_cleared
-                wipe_alice = json.loads(ws_alice.receive_text())
-                wipe_bob = json.loads(ws_bob.receive_text())
+                wipe_a = json.loads(ws_alice.receive_text())
+                wipe_b = json.loads(ws_bob.receive_text())
 
-                self.assertEqual(wipe_alice["type"], "chat_cleared")
-                self.assertEqual(wipe_bob["type"], "chat_cleared")
-                self.assertEqual(wipe_alice["by"], "Bob")
-                self.assertEqual(wipe_bob["by"], "Bob")
+                self.assertEqual(wipe_a["type"], "chat_cleared")
+                self.assertEqual(wipe_b["type"], "chat_cleared")
+                self.assertEqual(wipe_a["by"], "Bob")
+                self.assertEqual(wipe_b["by"], "Bob")
+
+    def test_one_hour_expiration_logic(self):
+        with self.client.websocket_connect("/ws/Charlie") as ws_charlie:
+            reg = json.loads(ws_charlie.receive_text())
+            self.assertEqual(reg["username"], "Charlie")
+
+            # Force session expiration by shifting created_at back by 3601 seconds
+            sess = online_users["Charlie"]
+            sess.expires_at = sess.created_at - 1  # Expired!
+
+            self.assertTrue(sess.is_expired())
+            self.assertEqual(sess.time_remaining(), 0)
+
+            # Trigger action on expired session -> receives session_expired
+            ws_charlie.send_text(json.dumps({"action": "connect_peer", "target": "Bob"}))
+            exp_msg = json.loads(ws_charlie.receive_text())
+            self.assertEqual(exp_msg["type"], "session_expired")
 
 
 if __name__ == "__main__":

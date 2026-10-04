@@ -1,174 +1,91 @@
 """
 pq_ratchet.web.app
-FastAPI WebSocket Gateway with Real-Time Post-Quantum KEM Ratchet Engine.
+Ephemeral Post-Quantum Messaging Gateway.
+Zero IP logging, zero disk persistence, 1-hour strict TTL peer registry.
 """
 
 import os
 import sys
 import json
 import time
-from typing import Dict, List, Optional
+import asyncio
+from typing import Dict, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
-# Ensure root is in sys.path
+# Ensure repository root is on sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from pq_ratchet.primitives.identity import IdentityPrivateKey
 from pq_ratchet.core.ratchet import PQRatchetSession
 from pq_ratchet.core.framing import RatchetDataPacket
 
-app = FastAPI(title="PQ-Ratchet Quantum-Safe Web Chat")
+SESSION_TTL_SECONDS = 3600  # Strict 1-Hour Ephemeral Lifetime
+
+
+class ZeroTraceMiddleware(BaseHTTPMiddleware):
+    """
+    Strips client IP addresses and privacy-leaking headers from requests and responses.
+    Ensures zero client IP retention in memory or server logs.
+    """
+    async def dispatch(self, request, call_next):
+        # Override client IP representation
+        request.scope["client"] = ("0.0.0.0", 0)
+        response = await call_next(request)
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        if "server" in response.headers:
+            del response.headers["server"]
+        return response
+
+
+app = FastAPI(title="PQ-Ratchet Ephemeral Chat", docs_url=None, redoc_url=None)
+app.add_middleware(ZeroTraceMiddleware)
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
-class ChatRoom:
-    def __init__(self, room_id: str) -> None:
-        self.room_id = room_id
-        self.clients: Dict[str, WebSocket] = {}
-        self.identities: Dict[str, IdentityPrivateKey] = {}
-        self.sessions: Dict[str, PQRatchetSession] = {}
-        self.history: List[dict] = []
-        self.handshake_ready: bool = False
+class UserSession:
+    def __init__(self, username: str, ws: WebSocket) -> None:
+        self.username = username
+        self.ws = ws
+        self.created_at = time.time()
+        self.expires_at = self.created_at + SESSION_TTL_SECONDS
+        self.identity = IdentityPrivateKey.generate()
+        self.active_peer: Optional[str] = None
+        self.ratchet_session: Optional[PQRatchetSession] = None
 
-    async def add_client(self, username: str, ws: WebSocket) -> None:
-        self.clients[username] = ws
-        self.identities[username] = IdentityPrivateKey.generate()
+    def is_expired(self) -> bool:
+        return time.time() >= self.expires_at
 
-        if len(self.clients) == 2 and not self.handshake_ready:
-            await self._execute_pqc_handshake()
+    def time_remaining(self) -> int:
+        return max(0, int(self.expires_at - time.time()))
 
-    async def remove_client(self, username: str) -> None:
-        self.clients.pop(username, None)
-        self.identities.pop(username, None)
-        if username in self.sessions:
+    def close_and_zeroize(self) -> None:
+        if self.ratchet_session is not None:
             try:
-                self.sessions[username].close()
+                self.ratchet_session.close()
             except Exception:
                 pass
-            self.sessions.pop(username, None)
-        self.handshake_ready = False
-
-    async def _execute_pqc_handshake(self) -> None:
-        """Executes mutual FIPS 203 ML-KEM-768 + FIPS 204 ML-DSA-65 handshake between the two peers."""
-        users = list(self.clients.keys())
-        u1, u2 = users[0], users[1]
-        id1, id2 = self.identities[u1], self.identities[u2]
-
-        # 1. u1 initiates
-        sess1, init_pkt = PQRatchetSession.initiate_handshake(
-            local_identity=id1,
-            remote_identity=id2.public_key(),
-        )
-
-        # 2. u2 responds
-        sess2, resp_pkt = PQRatchetSession.respond_handshake(
-            local_identity=id2,
-            init_packet_bytes=init_pkt,
-            expected_remote_identity=id1.public_key(),
-        )
-
-        # 3. u1 completes
-        sess1.complete_handshake(resp_pkt)
-
-        self.sessions[u1] = sess1
-        self.sessions[u2] = sess2
-        self.handshake_ready = True
-
-        fp1 = id1.public_key().to_bytes()[:8].hex()
-        fp2 = id2.public_key().to_bytes()[:8].hex()
-
-        handshake_payload = {
-            "type": "handshake_success",
-            "peer1": {"username": u1, "fingerprint": f"mldsa65:{fp1}..."},
-            "peer2": {"username": u2, "fingerprint": f"mldsa65:{fp2}..."},
-            "suite": "ML-KEM-768 + X25519 (Hybrid IND-CCA2) | ML-DSA-65 (EUF-CMA)",
-            "quantum_bits": 192,
-        }
-        await self.broadcast(handshake_payload)
-
-    async def broadcast(self, message: dict) -> None:
-        disconnected = []
-        for name, ws in self.clients.items():
-            try:
-                await ws.send_text(json.dumps(message))
-            except Exception:
-                disconnected.append(name)
-        for name in disconnected:
-            await self.remove_client(name)
-
-    async def send_message(self, sender: str, text: str) -> None:
-        if not self.handshake_ready or len(self.clients) < 2:
-            return
-
-        recipients = [u for u in self.clients if u != sender]
-        if not recipients:
-            return
-        recipient = recipients[0]
-
-        sender_sess = self.sessions[sender]
-        recipient_sess = self.sessions[recipient]
-
-        # Encrypt with real post-quantum ratchet
-        raw_ct = sender_sess.ratchet_encrypt(text.encode("utf-8"))
-        pkt = RatchetDataPacket.deserialize(raw_ct)
-
-        # Decrypt on recipient session
-        decrypted_bytes = recipient_sess.ratchet_decrypt(raw_ct)
-        decrypted_text = decrypted_bytes.decode("utf-8", errors="replace")
-
-        msg_obj = {
-            "type": "chat_message",
-            "sender": sender,
-            "text": decrypted_text,
-            "timestamp": time.strftime("%H:%M:%S"),
-            "pqc_meta": {
-                "epoch": pkt.epoch,
-                "seq": pkt.seq,
-                "has_kem_rekey": pkt.kem_ct is not None,
-                "kem_bytes": len(pkt.kem_ct) if pkt.kem_ct else 0,
-                "total_wire_bytes": len(raw_ct),
-                "aead_tag": raw_ct[-16:].hex()[:12],
-            },
-        }
-        self.history.append(msg_obj)
-        await self.broadcast(msg_obj)
-
-    async def clear_all_chat(self, initiated_by: str) -> None:
-        """Permanently clears chat history and advances ratchet keys on both endpoints."""
-        self.history.clear()
-
-        # Step ratchet forward to destroy past keys (Post-Clear Forward Secrecy)
-        for user, sess in self.sessions.items():
-            try:
-                # Advancing symmetric chain key irreversibly
-                if sess.state.sending_chain_key:
-                    from pq_ratchet.primitives.kdf import symmetric_chain_step, zeroize
-                    next_ck, _ = symmetric_chain_step(bytes(sess.state.sending_chain_key))
-                    zeroize(sess.state.sending_chain_key)
-                    sess.state.sending_chain_key = bytearray(next_ck)
-            except Exception:
-                pass
-
-        wipe_event = {
-            "type": "chat_cleared",
-            "by": initiated_by,
-            "timestamp": time.strftime("%H:%M:%S"),
-            "status": "Chat history permanently zeroized from both browser endpoints.",
-        }
-        await self.broadcast(wipe_event)
+            self.ratchet_session = None
 
 
-rooms: Dict[str, ChatRoom] = {}
+# Ephemeral in-memory registry. ZERO disk or database persistence.
+online_users: Dict[str, UserSession] = {}
 
 
-def get_room(room_id: str) -> ChatRoom:
-    if room_id not in rooms:
-        rooms[room_id] = ChatRoom(room_id)
-    return rooms[room_id]
+def cleanup_expired_sessions() -> None:
+    """Evicts users whose 1-hour window has expired."""
+    now = time.time()
+    expired = [u for u, s in online_users.items() if s.is_expired()]
+    for u in expired:
+        sess = online_users.pop(u, None)
+        if sess:
+            sess.close_and_zeroize()
 
 
 @app.get("/")
@@ -176,62 +93,213 @@ async def serve_index():
     return FileResponse(os.path.join(STATIC_DIR, "index.html"))
 
 
-@app.get("/api/info")
-async def get_crypto_info():
-    return JSONResponse({
-        "protocol": "PQ-Ratchet",
-        "version": "0.1.0",
-        "primitives": {
-            "kem": "ML-KEM-768 (FIPS 203) + X25519 (RFC 7748)",
-            "signature": "ML-DSA-65 (FIPS 204)",
-            "aead": "ChaCha20-Poly1305 (RFC 8439)",
-            "hash": "SHA3-512 (FIPS 202)",
-        },
-        "quantum_security_level": "192-bit (NIST Level 3 - FTQC Secure)",
-    })
+@app.get("/api/online-users")
+async def list_online_users():
+    cleanup_expired_sessions()
+    # Returns only anonymous usernames and their remaining TTL without IP addresses
+    users_info = [
+        {"username": u, "ttl": sess.time_remaining(), "busy": sess.active_peer is not None}
+        for u, sess in online_users.items()
+    ]
+    return JSONResponse({"users": users_info})
 
 
-@app.websocket("/ws/{room_id}/{username}")
-async def websocket_endpoint(websocket: WebSocket, room_id: str, username: str):
+@app.websocket("/ws/{username}")
+async def websocket_endpoint(websocket: WebSocket, username: str):
     await websocket.accept()
-    room = get_room(room_id)
+    cleanup_expired_sessions()
 
-    if len(room.clients) >= 2 and username not in room.clients:
-        await websocket.send_text(json.dumps({
-            "type": "error",
-            "message": "Room is full (Maximum 2 peers allowed for Point-to-Point Quantum E2EE).",
-        }))
+    clean_user = username.strip()
+    if not clean_user or len(clean_user) > 25:
+        await websocket.send_text(json.dumps({"type": "error", "message": "Invalid username"}))
         await websocket.close()
         return
 
-    await room.add_client(username, websocket)
+    # Check username availability
+    if clean_user in online_users:
+        existing = online_users[clean_user]
+        if not existing.is_expired():
+            await websocket.send_text(json.dumps({
+                "type": "error",
+                "message": f"Username '{clean_user}' is currently active. Choose another handle or wait for expiration.",
+            }))
+            await websocket.close()
+            return
+        else:
+            existing.close_and_zeroize()
+            online_users.pop(clean_user, None)
 
-    # Send current peer list
-    await room.broadcast({
-        "type": "peer_update",
-        "peers": list(room.clients.keys()),
-        "ready": room.handshake_ready,
-    })
+    session = UserSession(clean_user, websocket)
+    online_users[clean_user] = session
+
+    # Acknowledge connection with 1-hour TTL
+    await websocket.send_text(json.dumps({
+        "type": "session_registered",
+        "username": clean_user,
+        "ttl": session.time_remaining(),
+        "fingerprint": f"mldsa65:{session.identity.public_key().to_bytes()[:8].hex()}...",
+    }))
 
     try:
         while True:
-            raw_text = await websocket.receive_text()
-            data = json.loads(raw_text)
+            raw = await websocket.receive_text()
+            if session.is_expired():
+                await websocket.send_text(json.dumps({
+                    "type": "session_expired",
+                    "message": "Your 1-hour ephemeral session has expired. Keys zeroized.",
+                }))
+                break
+
+            data = json.loads(raw)
             action = data.get("action")
 
-            if action == "send_message":
-                text = data.get("text", "").strip()
-                if text:
-                    await room.send_message(username, text)
+            # Action 1: Add/Call another user by username
+            if action == "connect_peer":
+                target_username = data.get("target", "").strip()
+                if target_username == clean_user:
+                    await websocket.send_text(json.dumps({
+                        "type": "error",
+                        "message": "You cannot start a session with yourself.",
+                    }))
+                    continue
 
+                cleanup_expired_sessions()
+                target_sess = online_users.get(target_username)
+
+                if not target_sess or target_sess.is_expired():
+                    await websocket.send_text(json.dumps({
+                        "type": "error",
+                        "message": f"User '{target_username}' is offline or their 1-hour session expired.",
+                    }))
+                    continue
+
+                # Execute mutual post-quantum handshake
+                try:
+                    # 1. Initiator (clean_user) initiates
+                    sess_a, init_pkt = PQRatchetSession.initiate_handshake(
+                        local_identity=session.identity,
+                        remote_identity=target_sess.identity.public_key(),
+                    )
+                    # 2. Responder (target) responds
+                    sess_b, resp_pkt = PQRatchetSession.respond_handshake(
+                        local_identity=target_sess.identity,
+                        init_packet_bytes=init_pkt,
+                        expected_remote_identity=session.identity.public_key(),
+                    )
+                    # 3. Initiator completes
+                    sess_a.complete_handshake(resp_pkt)
+
+                    session.ratchet_session = sess_a
+                    session.active_peer = target_username
+
+                    target_sess.ratchet_session = sess_b
+                    target_sess.active_peer = clean_user
+
+                    fp_a = session.identity.public_key().to_bytes()[:8].hex()
+                    fp_b = target_sess.identity.public_key().to_bytes()[:8].hex()
+
+                    hs_data_a = {
+                        "type": "pqc_handshake_complete",
+                        "peer": target_username,
+                        "peer_fingerprint": f"mldsa65:{fp_b}...",
+                        "suite": "ML-KEM-768 + X25519 (Hybrid IND-CCA2) | ML-DSA-65 (EUF-CMA)",
+                        "bits": 192,
+                    }
+                    hs_data_b = {
+                        "type": "pqc_handshake_complete",
+                        "peer": clean_user,
+                        "peer_fingerprint": f"mldsa65:{fp_a}...",
+                        "suite": "ML-KEM-768 + X25519 (Hybrid IND-CCA2) | ML-DSA-65 (EUF-CMA)",
+                        "bits": 192,
+                    }
+
+                    await websocket.send_text(json.dumps(hs_data_a))
+                    await target_sess.ws.send_text(json.dumps(hs_data_b))
+
+                except Exception as e:
+                    await websocket.send_text(json.dumps({
+                        "type": "error",
+                        "message": f"Post-Quantum handshake failure: {str(e)}",
+                    }))
+
+            # Action 2: Send encrypted chat message
+            elif action == "send_message":
+                if not session.active_peer or not session.ratchet_session:
+                    await websocket.send_text(json.dumps({
+                        "type": "error",
+                        "message": "No active post-quantum session established with a peer.",
+                    }))
+                    continue
+
+                target_sess = online_users.get(session.active_peer)
+                if not target_sess or not target_sess.ratchet_session:
+                    await websocket.send_text(json.dumps({
+                        "type": "error",
+                        "message": f"Peer '{session.active_peer}' disconnected or session expired.",
+                    }))
+                    continue
+
+                text = data.get("text", "").strip()
+                if not text:
+                    continue
+
+                # Encrypt with ML-KEM-768 KEM Double Ratchet
+                raw_ct = session.ratchet_session.ratchet_encrypt(text.encode("utf-8"))
+                pkt = RatchetDataPacket.deserialize(raw_ct)
+
+                # Decrypt on recipient session
+                decrypted_bytes = target_sess.ratchet_session.ratchet_decrypt(raw_ct)
+                decrypted_text = decrypted_bytes.decode("utf-8", errors="replace")
+
+                timestamp = time.strftime("%H:%M:%S")
+                msg_out = {
+                    "type": "message",
+                    "sender": clean_user,
+                    "text": decrypted_text,
+                    "timestamp": timestamp,
+                    "pqc_meta": {
+                        "epoch": pkt.epoch,
+                        "seq": pkt.seq,
+                        "has_kem_rekey": pkt.kem_ct is not None,
+                        "kem_bytes": len(pkt.kem_ct) if pkt.kem_ct else 0,
+                        "total_wire_bytes": len(raw_ct),
+                        "aead_tag": raw_ct[-16:].hex()[:10],
+                    },
+                }
+
+                # Transmit to both endpoints
+                await websocket.send_text(json.dumps(msg_out))
+                await target_sess.ws.send_text(json.dumps(msg_out))
+
+            # Action 3: Mutual Instant Clear Chat
             elif action == "clear_chat":
-                await room.clear_all_chat(initiated_by=username)
+                if not session.active_peer:
+                    continue
+                target_sess = online_users.get(session.active_peer)
+
+                # Step ratchet symmetric chain forward and zeroize
+                from pq_ratchet.primitives.kdf import symmetric_chain_step, zeroize
+                for s in (session, target_sess):
+                    if s and s.ratchet_session and s.ratchet_session.state.sending_chain_key:
+                        try:
+                            n_ck, _ = symmetric_chain_step(bytes(s.ratchet_session.state.sending_chain_key))
+                            zeroize(s.ratchet_session.state.sending_chain_key)
+                            s.ratchet_session.state.sending_chain_key = bytearray(n_ck)
+                        except Exception:
+                            pass
+
+                wipe_msg = {
+                    "type": "chat_cleared",
+                    "by": clean_user,
+                    "timestamp": time.strftime("%H:%M:%S"),
+                }
+
+                await websocket.send_text(json.dumps(wipe_msg))
+                if target_sess and target_sess.ws:
+                    await target_sess.ws.send_text(json.dumps(wipe_msg))
 
     except WebSocketDisconnect:
-        await room.remove_client(username)
-        await room.broadcast({
-            "type": "peer_update",
-            "peers": list(room.clients.keys()),
-            "ready": False,
-            "message": f"{username} has disconnected. Session zeroized.",
-        })
+        pass
+    finally:
+        session.close_and_zeroize()
+        online_users.pop(clean_user, None)

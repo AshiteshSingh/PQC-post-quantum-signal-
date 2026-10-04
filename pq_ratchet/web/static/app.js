@@ -1,31 +1,47 @@
 /**
  * pq_ratchet.web.static.app.js
- * Client-Side Controller for Real-Time Post-Quantum Encrypted WebSocket Chat.
+ * Ephemeral Post-Quantum Messaging Controller.
+ * Zero disk persistence, zero browser database storage, 1-hour volatile lifecycle.
  */
 
 (function () {
+  // Enforce zero plaintext browser DB storage
+  try {
+    localStorage.clear();
+    sessionStorage.clear();
+  } catch (e) {}
+
   let ws = null;
   let currentUsername = "";
-  let currentRoom = "lobby";
-  let isHandshakeComplete = false;
+  let activePeer = null;
+  let ttlSeconds = 3600;
+  let countdownTimer = null;
+
+  // Purely Volatile RAM Heap - Wiped on tab close, reload, or expiration
+  const volatileMessageHeap = [];
 
   // DOM Elements
   const joinModal = document.getElementById("join-modal");
   const joinForm = document.getElementById("join-form");
   const inputUsername = document.getElementById("input-username");
-  const inputRoom = document.getElementById("input-room");
 
-  const displayRoomId = document.getElementById("display-room-id");
-  const btnCopyRoom = document.getElementById("btn-copy-room");
+  const statusBeacon = document.getElementById("status-beacon");
+  const securityStatusText = document.getElementById("security-status-text");
+  const ttlDisplay = document.getElementById("ttl-display");
+  const statTtlDrawer = document.getElementById("stat-ttl-drawer");
+  const peerChip = document.getElementById("peer-chip");
+  const displayPeerName = document.getElementById("display-peer-name");
+
   const btnClearChat = document.getElementById("btn-clear-chat");
   const btnToggleInspector = document.getElementById("btn-toggle-inspector");
   const btnCloseDrawer = document.getElementById("btn-close-drawer");
   const telemetryDrawer = document.getElementById("telemetry-drawer");
 
-  const statusBeacon = document.getElementById("status-beacon");
-  const securityStatusText = document.getElementById("security-status-text");
-  const specPeer1 = document.getElementById("spec-peer-1");
-  const specPeer2 = document.getElementById("spec-peer-2");
+  const peerPairingBox = document.getElementById("peer-pairing-box");
+  const currentUserTag = document.getElementById("current-user-tag");
+  const connectPeerForm = document.getElementById("connect-peer-form");
+  const targetPeerInput = document.getElementById("target-peer-input");
+  const onlineUsersList = document.getElementById("online-users-list");
 
   const messagesViewport = document.getElementById("messages-container");
   const messagesList = document.getElementById("messages-list");
@@ -36,49 +52,33 @@
   // Telemetry DOM
   const statEpoch = document.getElementById("stat-epoch");
   const statSeq = document.getElementById("stat-seq");
-  const statKemBytes = document.getElementById("stat-kem-bytes");
   const statAeadTag = document.getElementById("stat-aead-tag");
 
-  // Check URL query parameters for auto-join
-  const urlParams = new URLSearchParams(window.location.search);
-  const paramUser = urlParams.get("user") || urlParams.get("name");
-  const paramRoom = urlParams.get("room");
-
-  if (paramRoom) {
-    currentRoom = paramRoom;
-    inputRoom.value = paramRoom;
-    displayRoomId.textContent = paramRoom;
-  }
-  if (paramUser) {
-    inputUsername.value = paramUser;
-  }
-
-  // Handle Join Form
+  // Handle Username Submission
   joinForm.addEventListener("submit", function (e) {
     e.preventDefault();
-    const user = inputUsername.value.trim();
-    const room = inputRoom.value.trim() || "lobby";
+    const handle = inputUsername.value.trim();
+    if (!handle) return;
 
-    if (!user) return;
-
-    currentUsername = user;
-    currentRoom = room;
-    displayRoomId.textContent = room;
-
+    currentUsername = handle;
     joinModal.classList.add("hidden");
-    connectWebSocket(room, user);
+    currentUserTag.textContent = handle;
+
+    connectWebSocket(handle);
   });
 
-  // Connect WebSocket
-  function connectWebSocket(room, user) {
+  // WebSocket Connection
+  function connectWebSocket(username) {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${protocol}//${window.location.host}/ws/${encodeURIComponent(room)}/${encodeURIComponent(user)}`;
+    const wsUrl = `${protocol}//${window.location.host}/ws/${encodeURIComponent(username)}`;
 
-    showToast(`Connecting to quantum room: ${room}...`);
+    showToast(`Establishing ephemeral connection for ${username}...`);
     ws = new WebSocket(wsUrl);
 
     ws.onopen = function () {
-      showToast("WebSocket connected. Generating ML-DSA-65 identity...");
+      statusBeacon.className = "status-dot pulsing";
+      securityStatusText.textContent = "Online (Awaiting Peer)";
+      startPollingOnlineDirectory();
     };
 
     ws.onmessage = function (event) {
@@ -91,11 +91,7 @@
     };
 
     ws.onclose = function () {
-      statusBeacon.className = "status-dot pulsing";
-      securityStatusText.textContent = "Disconnected";
-      chatInput.disabled = true;
-      btnSendMessage.disabled = true;
-      showToast("Disconnected from quantum room. Refresh to rejoin.");
+      handleSessionTermination("Disconnected from server. Memory zeroized.");
     };
 
     ws.onerror = function (err) {
@@ -106,57 +102,153 @@
   // Handle Inbound Server Events
   function handleServerPayload(data) {
     switch (data.type) {
-      case "peer_update":
-        handlePeerUpdate(data);
+      case "session_registered":
+        ttlSeconds = data.ttl;
+        startTtlCountdown(ttlSeconds);
+        showToast(`Registered as '${data.username}'. Active for 1 hour.`);
         break;
 
-      case "handshake_success":
-        handleHandshakeSuccess(data);
+      case "pqc_handshake_complete":
+        onHandshakeComplete(data);
         break;
 
-      case "chat_message":
-        renderChatMessage(data);
+      case "message":
+        renderMessage(data);
         break;
 
       case "chat_cleared":
-        handleChatCleared(data);
+        onChatCleared(data);
+        break;
+
+      case "session_expired":
+        handleSessionTermination("Your 1-hour anonymous session has expired. All keys destroyed.");
         break;
 
       case "error":
-        alert(data.message);
+        showToast(data.message, true);
         break;
     }
   }
 
-  function handlePeerUpdate(data) {
-    if (data.peers && data.peers.length === 1) {
-      specPeer1.textContent = `${data.peers[0]} (Local)`;
-      specPeer2.textContent = "Waiting for peer to join...";
-      statusBeacon.className = "status-dot pulsing";
-      securityStatusText.textContent = "Waiting for peer";
-    }
-    if (data.message) {
-      showToast(data.message);
-    }
-  }
+  // Handshake Complete
+  function onHandshakeComplete(data) {
+    activePeer = data.peer;
+    displayPeerName.textContent = activePeer;
+    peerChip.classList.remove("hidden");
+    btnClearChat.classList.remove("hidden");
 
-  function handleHandshakeSuccess(data) {
-    isHandshakeComplete = true;
+    peerPairingBox.classList.add("hidden");
+    messagesList.classList.remove("hidden");
+
     statusBeacon.className = "status-dot active";
-    securityStatusText.textContent = "192-bit Quantum Safe (Active)";
-
-    specPeer1.textContent = `${data.peer1.username} [${data.peer1.fingerprint}]`;
-    specPeer2.textContent = `${data.peer2.username} [${data.peer2.fingerprint}]`;
+    securityStatusText.textContent = `Quantum Safe with ${activePeer}`;
 
     chatInput.disabled = false;
     btnSendMessage.disabled = false;
+    chatInput.placeholder = `Type a quantum-encrypted message to ${activePeer}...`;
     chatInput.focus();
 
-    showToast("Quantum Handshake verified! Channel is IND-CCA2 immune.");
+    showToast(`Quantum handshake verified with ${activePeer} (${data.bits}-bit FTQC immune).`);
   }
 
-  function renderChatMessage(msg) {
+  // 1-Hour Countdown Engine
+  function startTtlCountdown(initialTtl) {
+    if (countdownTimer) clearInterval(countdownTimer);
+    let remaining = initialTtl;
+
+    function update() {
+      if (remaining <= 0) {
+        clearInterval(countdownTimer);
+        handleSessionTermination("1-Hour session expired. RAM wiped.");
+        return;
+      }
+      const mins = Math.floor(remaining / 60);
+      const secs = remaining % 60;
+      const formatted = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+      ttlDisplay.textContent = formatted;
+      statTtlDrawer.textContent = `${formatted} Remaining`;
+      remaining--;
+    }
+
+    update();
+    countdownTimer = setInterval(update, 1000);
+  }
+
+  function handleSessionTermination(reason) {
+    if (countdownTimer) clearInterval(countdownTimer);
+    // Purge volatile RAM heap
+    volatileMessageHeap.length = 0;
+    messagesList.innerHTML = "";
+
+    statusBeacon.className = "status-dot";
+    securityStatusText.textContent = "Session Expired";
+    chatInput.disabled = true;
+    btnSendMessage.disabled = true;
+
+    alert(reason);
+    window.location.reload();
+  }
+
+  // Online Peer Directory Polling
+  function startPollingOnlineDirectory() {
+    async function poll() {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      try {
+        const resp = await fetch("/api/online-users", { cache: "no-store" });
+        if (resp.ok) {
+          const data = await resp.json();
+          renderOnlineDirectory(data.users || []);
+        }
+      } catch (e) {}
+    }
+    poll();
+    setInterval(poll, 4000);
+  }
+
+  function renderOnlineDirectory(users) {
+    const peers = users.filter(u => u.username !== currentUsername);
+    onlineUsersList.innerHTML = "";
+
+    if (peers.length === 0) {
+      onlineUsersList.innerHTML = '<span class="empty-hint">No other peers online yet. Open a 2nd tab or invite a friend!</span>';
+      return;
+    }
+
+    peers.forEach(p => {
+      const btn = document.createElement("button");
+      btn.className = "peer-chip-btn";
+      btn.innerHTML = `<span class="dot"></span> <span>${escapeHtml(p.username)}</span> <small>(${Math.floor(p.ttl / 60)}m left)</small>`;
+      btn.onclick = () => {
+        targetPeerInput.value = p.username;
+        targetPeerInput.focus();
+      };
+      onlineUsersList.appendChild(btn);
+    });
+  }
+
+  // Connect Peer Form
+  connectPeerForm.addEventListener("submit", function (e) {
+    e.preventDefault();
+    const target = targetPeerInput.value.trim();
+    if (!target) return;
+
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      showToast("WebSocket not connected.", true);
+      return;
+    }
+
+    showToast(`Initiating ML-DSA-65 authenticated handshake with '${target}'...`);
+    ws.send(JSON.stringify({
+      action: "connect_peer",
+      target: target,
+    }));
+  });
+
+  // Render Encrypted Message
+  function renderMessage(msg) {
+    volatileMessageHeap.push(msg);
     const isMine = msg.sender === currentUsername;
+
     const row = document.createElement("div");
     row.className = `message-row ${isMine ? "mine" : "peer"}`;
 
@@ -168,7 +260,6 @@
     bubble.className = "bubble";
     bubble.textContent = msg.text;
 
-    // PQC Telemetry Badge below message
     const meta = msg.pqc_meta;
     const tagRow = document.createElement("div");
     tagRow.className = "quantum-tag-row";
@@ -186,31 +277,41 @@
     messagesList.appendChild(row);
     scrollToBottom();
 
-    // Update Live Telemetry Panel
+    // Update Telemetry Panel
     statEpoch.textContent = meta.epoch;
     statSeq.textContent = meta.seq;
-    statKemBytes.textContent = meta.has_kem_rekey ? `${meta.kem_bytes} Bytes` : "Symmetric (0 B)";
     statAeadTag.textContent = `Poly1305 MAC: ${meta.aead_tag}...`;
   }
 
-  // Handle Clear Chat Event (Executed simultaneously on both endpoints)
-  function handleChatCleared(data) {
-    // 1. Wipe all chat messages from screen
+  // Mutual "Clear Chat for Both"
+  function onChatCleared(data) {
+    // 1. Wipe volatile RAM heap
+    volatileMessageHeap.length = 0;
+
+    // 2. Wipe DOM completely
     messagesList.innerHTML = "";
 
-    // 2. Append prominent system notification
+    // 3. Render verified system wipe banner
     const banner = document.createElement("div");
     banner.className = "system-banner";
-    banner.innerHTML = `<strong>CHAT HISTORY CLEARED</strong><br>Permanently zeroized and ratchet advanced by <em>${escapeHtml(data.by)}</em> at ${data.timestamp}.`;
+    banner.innerHTML = `<strong>CHAT HISTORY PERMANENTLY ERASED</strong><br>Zeroized from both browser endpoints and ratchet keys rotated by <em>${escapeHtml(data.by)}</em> at ${data.timestamp}.`;
     messagesList.appendChild(banner);
 
-    // 3. Reset telemetry indicators
     statSeq.textContent = "0";
-    showToast(`Chat cleared by ${data.by}. Keys rotated.`);
+    showToast(`Chat history wiped from both ends by ${data.by}.`);
     scrollToBottom();
   }
 
-  // Send Message Logic
+  btnClearChat.addEventListener("click", function () {
+    if (!confirm("Permanently wipe chat history from BOTH devices and advance ratchet keys?")) {
+      return;
+    }
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ action: "clear_chat" }));
+    }
+  });
+
+  // Message Send
   function sendMessage() {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     const text = chatInput.value.trim();
@@ -233,31 +334,7 @@
     }
   });
 
-  // Clear Chat for Both
-  btnClearChat.addEventListener("click", function () {
-    if (!confirm("Are you sure you want to permanently clear the chat history for BOTH endpoints? This will advance and zeroize all session keys.")) {
-      return;
-    }
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({
-        action: "clear_chat",
-      }));
-    }
-  });
-
-  // Copy Room Link
-  btnCopyRoom.addEventListener("click", function () {
-    const url = new URL(window.location.href);
-    url.searchParams.set("room", currentRoom);
-    url.searchParams.delete("user");
-    navigator.clipboard.writeText(url.toString()).then(function () {
-      showToast("Room invite link copied to clipboard!");
-    }).catch(function () {
-      showToast(`Room ID: ${currentRoom}`);
-    });
-  });
-
-  // Telemetry Drawer Controls
+  // Telemetry Panel Toggle
   btnToggleInspector.addEventListener("click", function () {
     telemetryDrawer.classList.toggle("open");
   });
@@ -269,15 +346,16 @@
     messagesViewport.scrollTop = messagesViewport.scrollHeight;
   }
 
-  function showToast(text) {
+  function showToast(text, isError = false) {
     const toast = document.createElement("div");
     toast.className = "toast";
+    if (isError) toast.style.borderColor = "var(--accent-rose)";
     toast.textContent = text;
     toastStack.appendChild(toast);
     setTimeout(() => {
       toast.style.opacity = "0";
       setTimeout(() => toast.remove(), 300);
-    }, 3000);
+    }, 3200);
   }
 
   function escapeHtml(str) {
