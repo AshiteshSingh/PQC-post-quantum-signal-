@@ -3,8 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>PQ-Ratchet | Zero-Trace Ephemeral Post-Quantum Chat</title>
-  <!-- Anti-Forensics & Cache-Control meta tags -->
+  <title>Chat</title>
   <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
@@ -12,220 +11,112 @@
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body class="dark-theme">
-  <!-- Dynamic Glowing Quantum Mesh Background -->
-  <div class="mesh-bg" aria-hidden="true"></div>
-
-  <!-- Top Navigation & Cryptographic Telemetry Bar -->
+  <!-- Minimalist Top Navigation -->
   <header class="navbar" id="main-header">
     <div class="nav-left">
-      <div class="brand-logo">
-        <svg class="atom-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-          <ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(30 12 12)"></ellipse>
-          <ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(90 12 12)"></ellipse>
-          <ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(150 12 12)"></ellipse>
-          <circle cx="12" cy="12" r="2.5" fill="currentColor"></circle>
-        </svg>
-        <div class="brand-text">
-          <span class="brand-title">PQ-Ratchet</span>
-          <span class="brand-sub">EPHEMERAL</span>
-        </div>
-      </div>
-      
-      <div class="security-badge" id="security-indicator" title="Protected against FTQC Shor's algorithm">
-        <span class="status-dot pulsing" id="status-beacon"></span>
-        <span id="security-status-text">Anonymous Standby</span>
-      </div>
-    </div>
-
-    <div class="nav-center">
-      <!-- 1-Hour Ephemeral Countdown Badge -->
-      <div class="ttl-badge" id="ttl-container" title="Strict 1-hour session limit. Auto-wipes when expired.">
-        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="12" cy="12" r="10"></circle>
-          <polyline points="12 6 12 12 16 14"></polyline>
-        </svg>
-        <span class="ttl-label">EXPIRY:</span>
-        <span class="ttl-timer" id="ttl-display">60:00</span>
-      </div>
-
-      <div class="active-peer-chip hidden" id="peer-chip">
-        <span class="peer-chip-label">PEER:</span>
-        <span class="peer-chip-name" id="display-peer-name">None</span>
+      <div class="user-avatar" id="header-avatar">?</div>
+      <div class="user-info">
+        <span class="user-name" id="display-peer-name">Direct Chat</span>
+        <span class="user-status" id="display-peer-status">Offline</span>
       </div>
     </div>
 
     <div class="nav-right">
-      <button class="nav-btn clear-btn hidden" id="btn-clear-chat" title="Permanently wipes chat history from BOTH devices">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+      <div class="session-timer" id="ttl-container" title="Session time remaining">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"></circle>
+          <polyline points="12 6 12 12 16 14"></polyline>
+        </svg>
+        <span id="ttl-display">60:00</span>
+      </div>
+
+      <button class="nav-btn clear-btn hidden" id="btn-clear-chat" title="Clear chat for both users">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
           <polyline points="3 6 5 6 21 6"></polyline>
           <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-          <line x1="10" y1="11" x2="10" y2="17"></line>
-          <line x1="14" y1="11" x2="14" y2="17"></line>
         </svg>
-        <span>Clear Chat for Both</span>
-      </button>
-
-      <button class="nav-btn inspector-toggle" id="btn-toggle-inspector" title="Toggle Quantum Packet Telemetry">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-          <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
-          <polyline points="2 17 12 22 22 17"></polyline>
-          <polyline points="2 12 12 17 22 12"></polyline>
-        </svg>
-        <span>Telemetry</span>
+        <span>Clear chat</span>
       </button>
     </div>
   </header>
 
-  <!-- Main Viewport -->
+  <!-- Chat Viewport -->
   <main class="chat-layout">
-    <!-- Messages & Pairing Viewport -->
     <section class="messages-viewport" id="messages-container">
       
-      <!-- Connect Peer Bar (Shown when user has handle but no active peer) -->
+      <!-- Connect Peer Bar (Shown before a peer is connected) -->
       <div class="peer-pairing-card" id="peer-pairing-box">
-        <div class="pairing-header">
-          <div class="pairing-badge">
-            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
-              <circle cx="9" cy="7" r="4"></circle>
-              <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
-              <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
-            </svg>
-          </div>
-          <div>
-            <h3>Start Quantum Session With Another Person</h3>
-            <p>Your handle is <strong id="current-user-tag" class="text-cyan">...</strong>. Ask their username and enter it below to establish an end-to-end lattice channel.</p>
-          </div>
-        </div>
+        <h3>New Chat</h3>
+        <p class="pairing-sub">Logged in as <strong id="current-user-tag" class="text-user">...</strong></p>
 
         <form id="connect-peer-form" class="pairing-form">
           <input 
             type="text" 
             id="target-peer-input" 
             class="form-input" 
-            placeholder="Enter friend's username (e.g. Bob)..." 
+            placeholder="Enter username to chat..." 
             required 
             maxlength="25"
           >
           <button type="submit" class="submit-btn-inline" id="btn-call-peer">
-            <span>Connect & Ratchet</span>
+            <span>Start</span>
           </button>
         </form>
 
-        <!-- Live Ephemeral Online Directory -->
         <div class="online-peers-container">
-          <span class="online-label">Online Handles (Active in last hour):</span>
+          <span class="online-label">Available users</span>
           <div class="online-chips-list" id="online-users-list">
-            <span class="empty-hint">Scanning network...</span>
+            <span class="empty-hint">No other users online</span>
           </div>
         </div>
       </div>
 
-      <!-- Live Messages Flow -->
+      <!-- Messages Stream -->
       <div class="messages-list hidden" id="messages-list"></div>
     </section>
-
-    <!-- Side Telemetry Drawer (Quantum Wire Inspector) -->
-    <aside class="telemetry-panel" id="telemetry-drawer">
-      <div class="drawer-header">
-        <h3>Quantum Inspector</h3>
-        <button class="close-btn" id="btn-close-drawer">&times;</button>
-      </div>
-      <div class="drawer-content">
-        <div class="telemetry-card">
-          <span class="telemetry-label">Privacy Model</span>
-          <span class="telemetry-value text-emerald">Zero-Trace / Anti-Forensic</span>
-          <span class="telemetry-sub">No IP logged. No DB stored. Volatile RAM only.</span>
-        </div>
-        <div class="telemetry-card">
-          <span class="telemetry-label">Ephemeral Session Lifetime</span>
-          <span class="telemetry-value text-accent" id="stat-ttl-drawer">60:00 Remaining</span>
-          <span class="telemetry-sub">Automatic wipe and key destruction on expiry.</span>
-        </div>
-        <div class="telemetry-card">
-          <span class="telemetry-label">Key Encapsulation Primitive</span>
-          <span class="telemetry-value text-accent">NIST FIPS 203 (ML-KEM-768)</span>
-          <span class="telemetry-sub">Module-LWE (k=3, q=3329, eta=2)</span>
-        </div>
-        <div class="telemetry-card">
-          <span class="telemetry-label">Identity Signature</span>
-          <span class="telemetry-value text-accent">NIST FIPS 204 (ML-DSA-65)</span>
-          <span class="telemetry-sub">Module-SIS (Level 3 EUF-CMA)</span>
-        </div>
-        <div class="telemetry-card">
-          <span class="telemetry-label">Continuous Ratchet Epoch</span>
-          <div class="stat-grid">
-            <div>
-              <span class="stat-number" id="stat-epoch">0</span>
-              <span class="stat-title">Epoch</span>
-            </div>
-            <div>
-              <span class="stat-number" id="stat-seq">0</span>
-              <span class="stat-title">Seq</span>
-            </div>
-          </div>
-        </div>
-        <div class="telemetry-card">
-          <span class="telemetry-label">Symmetric Authenticated Frame</span>
-          <span class="telemetry-value">ChaCha20-Poly1305</span>
-          <span class="telemetry-sub" id="stat-aead-tag">MAC Tag: None</span>
-        </div>
-      </div>
-    </aside>
   </main>
 
-  <!-- Bottom Message Input Composer -->
+  <!-- Message Composer -->
   <footer class="composer-bar">
     <div class="composer-container">
       <input 
         type="text" 
         id="chat-input" 
         class="chat-input" 
-        placeholder="Connect to a peer above to begin quantum chat..." 
+        placeholder="Type a message..." 
         autocomplete="off" 
         disabled
       >
-      <button class="send-btn" id="btn-send-message" disabled>
-        <span>Send</span>
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+      <button class="send-btn" id="btn-send-message" disabled aria-label="Send message">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
           <line x1="22" y1="2" x2="11" y2="13"></line>
           <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
         </svg>
       </button>
     </div>
-    <div class="composer-footer-text">
-      <span>Zero disk storage &bull; Zero IP retention &bull; 1-Hour Ephemeral Lifecycle &bull; 192-bit Quantum Safe</span>
-    </div>
   </footer>
 
-  <!-- Initial User Onboarding Modal -->
+  <!-- Username Setup Modal -->
   <div class="modal-backdrop" id="join-modal">
     <div class="modal-card">
-      <div class="modal-badge">
-        <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
-        </svg>
-      </div>
-      <h2>Ephemeral Quantum Chat</h2>
-      <p class="modal-subtitle">Choose an ephemeral handle. Active for <strong>1 hour only</strong>. Zero logs, zero IP tracking, zero browser DB storage.</p>
+      <h2>Welcome</h2>
+      <p class="modal-subtitle">Choose a username to start chatting.</p>
 
       <form id="join-form">
         <div class="form-group">
-          <label for="input-username">Set Your Anonymous Username</label>
-          <input type="text" id="input-username" class="form-input" placeholder="e.g. Alice" required autofocus maxlength="25">
+          <input type="text" id="input-username" class="form-input" placeholder="Your username" required autofocus maxlength="25">
         </div>
         <button type="submit" class="submit-btn" id="btn-join-session">
-          <span>Start 1-Hour Session</span>
+          <span>Continue</span>
         </button>
       </form>
     </div>
   </div>
 
-  <!-- Toast Container -->
   <div class="toast-stack" id="toast-stack"></div>
 
   <script src="/static/app.js"></script>

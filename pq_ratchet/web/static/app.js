@@ -1,11 +1,11 @@
 /**
  * pq_ratchet.web.static.app.js
- * Ephemeral Post-Quantum Messaging Controller.
- * Zero disk persistence, zero browser database storage, 1-hour volatile lifecycle.
+ * Clean, Minimalist Client Controller.
+ * Under-the-hood CIA-grade Post-Quantum Cryptography (FIPS 203 + 204),
+ * zero persistence, volatile memory heap, and mutual chat clearing.
  */
 
 (function () {
-  // Enforce zero plaintext browser DB storage
   try {
     localStorage.clear();
     sessionStorage.clear();
@@ -17,7 +17,7 @@
   let ttlSeconds = 3600;
   let countdownTimer = null;
 
-  // Purely Volatile RAM Heap - Wiped on tab close, reload, or expiration
+  // Volatile RAM only - wiped on close/expiry
   const volatileMessageHeap = [];
 
   // DOM Elements
@@ -25,17 +25,11 @@
   const joinForm = document.getElementById("join-form");
   const inputUsername = document.getElementById("input-username");
 
-  const statusBeacon = document.getElementById("status-beacon");
-  const securityStatusText = document.getElementById("security-status-text");
-  const ttlDisplay = document.getElementById("ttl-display");
-  const statTtlDrawer = document.getElementById("stat-ttl-drawer");
-  const peerChip = document.getElementById("peer-chip");
+  const headerAvatar = document.getElementById("header-avatar");
   const displayPeerName = document.getElementById("display-peer-name");
-
+  const displayPeerStatus = document.getElementById("display-peer-status");
+  const ttlDisplay = document.getElementById("ttl-display");
   const btnClearChat = document.getElementById("btn-clear-chat");
-  const btnToggleInspector = document.getElementById("btn-toggle-inspector");
-  const btnCloseDrawer = document.getElementById("btn-close-drawer");
-  const telemetryDrawer = document.getElementById("telemetry-drawer");
 
   const peerPairingBox = document.getElementById("peer-pairing-box");
   const currentUserTag = document.getElementById("current-user-tag");
@@ -48,11 +42,6 @@
   const chatInput = document.getElementById("chat-input");
   const btnSendMessage = document.getElementById("btn-send-message");
   const toastStack = document.getElementById("toast-stack");
-
-  // Telemetry DOM
-  const statEpoch = document.getElementById("stat-epoch");
-  const statSeq = document.getElementById("stat-seq");
-  const statAeadTag = document.getElementById("stat-aead-tag");
 
   // Handle Username Submission
   joinForm.addEventListener("submit", function (e) {
@@ -72,12 +61,10 @@
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${protocol}//${window.location.host}/ws/${encodeURIComponent(username)}`;
 
-    showToast(`Establishing ephemeral connection for ${username}...`);
     ws = new WebSocket(wsUrl);
 
     ws.onopen = function () {
-      statusBeacon.className = "status-dot pulsing";
-      securityStatusText.textContent = "Online (Awaiting Peer)";
+      displayPeerStatus.textContent = "Online";
       startPollingOnlineDirectory();
     };
 
@@ -86,26 +73,25 @@
         const data = JSON.parse(event.data);
         handleServerPayload(data);
       } catch (err) {
-        console.error("Malformed server frame:", err);
+        console.error("Payload error:", err);
       }
     };
 
     ws.onclose = function () {
-      handleSessionTermination("Disconnected from server. Memory zeroized.");
+      handleSessionTermination("Session closed.");
     };
 
     ws.onerror = function (err) {
-      console.error("WebSocket error:", err);
+      console.error("Connection error:", err);
     };
   }
 
-  // Handle Inbound Server Events
+  // Handle Server Events
   function handleServerPayload(data) {
     switch (data.type) {
       case "session_registered":
         ttlSeconds = data.ttl;
         startTtlCountdown(ttlSeconds);
-        showToast(`Registered as '${data.username}'. Active for 1 hour.`);
         break;
 
       case "pqc_handshake_complete":
@@ -121,7 +107,7 @@
         break;
 
       case "session_expired":
-        handleSessionTermination("Your 1-hour anonymous session has expired. All keys destroyed.");
+        handleSessionTermination("Your 1-hour session has expired.");
         break;
 
       case "error":
@@ -134,24 +120,20 @@
   function onHandshakeComplete(data) {
     activePeer = data.peer;
     displayPeerName.textContent = activePeer;
-    peerChip.classList.remove("hidden");
-    btnClearChat.classList.remove("hidden");
+    displayPeerStatus.textContent = "Online";
+    headerAvatar.textContent = activePeer.charAt(0).toUpperCase();
 
+    btnClearChat.classList.remove("hidden");
     peerPairingBox.classList.add("hidden");
     messagesList.classList.remove("hidden");
 
-    statusBeacon.className = "status-dot active";
-    securityStatusText.textContent = `Quantum Safe with ${activePeer}`;
-
     chatInput.disabled = false;
     btnSendMessage.disabled = false;
-    chatInput.placeholder = `Type a quantum-encrypted message to ${activePeer}...`;
+    chatInput.placeholder = "Type a message...";
     chatInput.focus();
-
-    showToast(`Quantum handshake verified with ${activePeer} (${data.bits}-bit FTQC immune).`);
   }
 
-  // 1-Hour Countdown Engine
+  // 1-Hour Ephemeral Timer
   function startTtlCountdown(initialTtl) {
     if (countdownTimer) clearInterval(countdownTimer);
     let remaining = initialTtl;
@@ -159,14 +141,12 @@
     function update() {
       if (remaining <= 0) {
         clearInterval(countdownTimer);
-        handleSessionTermination("1-Hour session expired. RAM wiped.");
+        handleSessionTermination("1-Hour session ended.");
         return;
       }
       const mins = Math.floor(remaining / 60);
       const secs = remaining % 60;
-      const formatted = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-      ttlDisplay.textContent = formatted;
-      statTtlDrawer.textContent = `${formatted} Remaining`;
+      ttlDisplay.textContent = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
       remaining--;
     }
 
@@ -176,12 +156,10 @@
 
   function handleSessionTermination(reason) {
     if (countdownTimer) clearInterval(countdownTimer);
-    // Purge volatile RAM heap
     volatileMessageHeap.length = 0;
     messagesList.innerHTML = "";
 
-    statusBeacon.className = "status-dot";
-    securityStatusText.textContent = "Session Expired";
+    displayPeerStatus.textContent = "Expired";
     chatInput.disabled = true;
     btnSendMessage.disabled = true;
 
@@ -189,7 +167,7 @@
     window.location.reload();
   }
 
-  // Online Peer Directory Polling
+  // Online Users Polling
   function startPollingOnlineDirectory() {
     async function poll() {
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
@@ -210,14 +188,14 @@
     onlineUsersList.innerHTML = "";
 
     if (peers.length === 0) {
-      onlineUsersList.innerHTML = '<span class="empty-hint">No other peers online yet. Open a 2nd tab or invite a friend!</span>';
+      onlineUsersList.innerHTML = '<span class="empty-hint">No other users online yet</span>';
       return;
     }
 
     peers.forEach(p => {
       const btn = document.createElement("button");
       btn.className = "peer-chip-btn";
-      btn.innerHTML = `<span class="dot"></span> <span>${escapeHtml(p.username)}</span> <small>(${Math.floor(p.ttl / 60)}m left)</small>`;
+      btn.innerHTML = `<span class="dot"></span> <span>${escapeHtml(p.username)}</span>`;
       btn.onclick = () => {
         targetPeerInput.value = p.username;
         targetPeerInput.focus();
@@ -233,18 +211,17 @@
     if (!target) return;
 
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      showToast("WebSocket not connected.", true);
+      showToast("Not connected", true);
       return;
     }
 
-    showToast(`Initiating ML-DSA-65 authenticated handshake with '${target}'...`);
     ws.send(JSON.stringify({
       action: "connect_peer",
       target: target,
     }));
   });
 
-  // Render Encrypted Message
+  // Render Clean Message (Looks like normal Telegram / WhatsApp / iMessage)
   function renderMessage(msg) {
     volatileMessageHeap.push(msg);
     const isMine = msg.sender === currentUsername;
@@ -252,58 +229,41 @@
     const row = document.createElement("div");
     row.className = `message-row ${isMine ? "mine" : "peer"}`;
 
-    const header = document.createElement("div");
-    header.className = "message-meta-header";
-    header.innerHTML = `<span class="sender-name">${escapeHtml(msg.sender)}</span> <span>${msg.timestamp}</span>`;
-
     const bubble = document.createElement("div");
     bubble.className = "bubble";
-    bubble.textContent = msg.text;
 
-    const meta = msg.pqc_meta;
-    const tagRow = document.createElement("div");
-    tagRow.className = "quantum-tag-row";
+    const textSpan = document.createElement("span");
+    textSpan.className = "bubble-text";
+    textSpan.textContent = msg.text;
 
-    if (meta.has_kem_rekey) {
-      tagRow.innerHTML += `<span class="pqc-pill kem-turn">ML-KEM-768 Encap: ${meta.kem_bytes}B</span>`;
-    }
-    tagRow.innerHTML += `<span class="pqc-pill">Epoch ${meta.epoch} | Seq ${meta.seq}</span>`;
-    tagRow.innerHTML += `<span class="pqc-pill">Tag: ${meta.aead_tag}...</span>`;
+    const timeSpan = document.createElement("span");
+    timeSpan.className = "bubble-time";
+    timeSpan.textContent = msg.timestamp;
 
-    row.appendChild(header);
+    bubble.appendChild(textSpan);
+    bubble.appendChild(timeSpan);
     row.appendChild(bubble);
-    row.appendChild(tagRow);
 
     messagesList.appendChild(row);
     scrollToBottom();
-
-    // Update Telemetry Panel
-    statEpoch.textContent = meta.epoch;
-    statSeq.textContent = meta.seq;
-    statAeadTag.textContent = `Poly1305 MAC: ${meta.aead_tag}...`;
   }
 
-  // Mutual "Clear Chat for Both"
+  // Mutual "Clear Chat"
   function onChatCleared(data) {
-    // 1. Wipe volatile RAM heap
     volatileMessageHeap.length = 0;
-
-    // 2. Wipe DOM completely
     messagesList.innerHTML = "";
 
-    // 3. Render verified system wipe banner
-    const banner = document.createElement("div");
-    banner.className = "system-banner";
-    banner.innerHTML = `<strong>CHAT HISTORY PERMANENTLY ERASED</strong><br>Zeroized from both browser endpoints and ratchet keys rotated by <em>${escapeHtml(data.by)}</em> at ${data.timestamp}.`;
-    messagesList.appendChild(banner);
+    const notice = document.createElement("div");
+    notice.className = "system-notice";
+    notice.textContent = "Chat history cleared";
+    messagesList.appendChild(notice);
 
-    statSeq.textContent = "0";
-    showToast(`Chat history wiped from both ends by ${data.by}.`);
+    showToast("Chat cleared");
     scrollToBottom();
   }
 
   btnClearChat.addEventListener("click", function () {
-    if (!confirm("Permanently wipe chat history from BOTH devices and advance ratchet keys?")) {
+    if (!confirm("Clear chat history for both participants?")) {
       return;
     }
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -311,7 +271,7 @@
     }
   });
 
-  // Message Send
+  // Send Message
   function sendMessage() {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     const text = chatInput.value.trim();
@@ -334,14 +294,6 @@
     }
   });
 
-  // Telemetry Panel Toggle
-  btnToggleInspector.addEventListener("click", function () {
-    telemetryDrawer.classList.toggle("open");
-  });
-  btnCloseDrawer.addEventListener("click", function () {
-    telemetryDrawer.classList.remove("open");
-  });
-
   function scrollToBottom() {
     messagesViewport.scrollTop = messagesViewport.scrollHeight;
   }
@@ -349,13 +301,13 @@
   function showToast(text, isError = false) {
     const toast = document.createElement("div");
     toast.className = "toast";
-    if (isError) toast.style.borderColor = "var(--accent-rose)";
+    if (isError) toast.style.borderColor = "#f43f5e";
     toast.textContent = text;
     toastStack.appendChild(toast);
     setTimeout(() => {
       toast.style.opacity = "0";
-      setTimeout(() => toast.remove(), 300);
-    }, 3200);
+      setTimeout(() => toast.remove(), 250);
+    }, 2500);
   }
 
   function escapeHtml(str) {
