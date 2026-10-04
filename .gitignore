@@ -12,3 +12,5 @@ htmlcov/
 .venv/
 env/
 venv/
+
+.agents/
