@@ -155,6 +155,8 @@ async def run_chat(mode: str, host: str, port: int, key_path: str, peer_pub_path
         connected.set()
 
     assert session is not None
+    peer_fp = session.session.state.remote_identity.to_bytes()[:8].hex()
+    print(f"[+] Authenticated peer ML-DSA-65 identity: [id:{peer_fp}...]")
 
     async def chat_recv():
         try:
@@ -180,7 +182,12 @@ async def run_chat(mode: str, host: str, port: int, key_path: str, peer_pub_path
     send_task = asyncio.create_task(chat_send())
 
     print("\033[94m[You]\033[0m ", end="", flush=True)
-    await asyncio.gather(recv_task, send_task, return_exceptions=True)
+    done, pending = await asyncio.wait(
+        [recv_task, send_task],
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    for task in pending:
+        task.cancel()
     await session.close()
 
 

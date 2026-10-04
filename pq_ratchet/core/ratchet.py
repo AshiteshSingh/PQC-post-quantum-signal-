@@ -50,7 +50,7 @@ class PQRatchetSession:
     def initiate_handshake(
         cls,
         local_identity: IdentityPrivateKey,
-        remote_identity: IdentityPublicKey,
+        remote_identity: Optional[IdentityPublicKey] = None,
     ) -> Tuple["PQRatchetSession", bytes]:
         """
         Initiates outbound session (Alice -> Bob).
@@ -156,8 +156,11 @@ class PQRatchetSession:
         resp_pkt = HandshakeRespPacket.deserialize(resp_packet_bytes)
         resp_id_pk = IdentityPublicKey.from_bytes(resp_pkt.responder_identity_pk_bytes)
 
-        if resp_id_pk.to_bytes() != self.state.remote_identity.to_bytes():
-            raise PermissionError("Responder identity does not match expected peer public key")
+        if self.state.remote_identity is not None:
+            if resp_id_pk.to_bytes() != self.state.remote_identity.to_bytes():
+                raise PermissionError("Responder identity does not match expected peer public key")
+        else:
+            self.state.remote_identity = resp_id_pk
 
         # Verify ML-DSA-65 signature on responder transcript
         resp_transcript = DOMAIN_AUTH_TRANSCRIPT + resp_pkt.kem_ct_bytes + resp_pkt.ephemeral_kem_pk_bytes

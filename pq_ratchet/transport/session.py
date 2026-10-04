@@ -37,7 +37,7 @@ class AsyncPQStreamSession:
         host: str,
         port: int,
         local_identity: IdentityPrivateKey,
-        remote_identity: IdentityPublicKey,
+        remote_identity: Optional[IdentityPublicKey] = None,
     ) -> "AsyncPQStreamSession":
         """
         Establishes outbound TCP socket and executes initiator handshake.

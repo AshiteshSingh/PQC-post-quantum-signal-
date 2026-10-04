@@ -25,7 +25,7 @@ class SessionState:
     def __init__(
         self,
         local_identity: IdentityPrivateKey,
-        remote_identity: IdentityPublicKey,
+        remote_identity: Optional[IdentityPublicKey],
         root_key: bytes,
         is_initiator: bool,
     ) -> None:
