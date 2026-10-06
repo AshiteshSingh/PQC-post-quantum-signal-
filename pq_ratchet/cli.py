@@ -285,9 +285,9 @@ async def run_p2p_chat(key_path: str, peer_pub_path: str, target_peer_id: str, l
                 break
             txt = line.strip()
             if txt:
-                sent = await node.send_relayed(target_peer_id, txt.encode("utf-8"))
+                sent = await node.send_direct(target_peer_id, txt.encode("utf-8"))
                 if not sent:
-                    print(f"[-] Target peer not currently reachable in mesh.")
+                    print(f"[-] Target peer not currently reachable. Direct connection required for E2EE.")
             print("\033[94m[You]\033[0m ", end="", flush=True)
 
     print("\033[94m[You]\033[0m ", end="", flush=True)
