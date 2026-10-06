@@ -110,6 +110,9 @@ class TestDecentralizedTransport(unittest.IsolatedAsyncioTestCase):
         """
         Simulates 3-node mesh topology: A <---> B <---> C
         Node A transmits message to Node C through Node B via zero-trust blind relaying.
+        Invariant 1: Node C receives authenticated, decrypted plaintext.
+        Invariant 2: Intermediate Node B receives zero application plaintext.
+        Invariant 3: Plaintext relay attempts are rejected with ValueError.
         """
         node_a_sk = IdentityPrivateKey.generate()
         node_b_sk = IdentityPrivateKey.generate()
@@ -119,13 +122,18 @@ class TestDecentralizedTransport(unittest.IsolatedAsyncioTestCase):
         node_b = PQP2PNode(local_identity=node_b_sk, trusted_peers=[node_a_sk.public_key(), node_c_sk.public_key()], listen_host="127.0.0.1", listen_port=19212)
         node_c = PQP2PNode(local_identity=node_c_sk, trusted_peers=[node_b_sk.public_key(), node_a_sk.public_key()], listen_host="127.0.0.1", listen_port=19213)
 
+        b_received = []
         c_received = []
         c_event = asyncio.Event()
+
+        def on_msg_b(origin: str, data: bytes):
+            b_received.append((origin, data))
 
         def on_msg_c(origin: str, data: bytes):
             c_received.append((origin, data))
             c_event.set()
 
+        node_b.on_message_received = on_msg_b
         node_c.on_message_received = on_msg_c
 
         await node_a.start()
@@ -133,18 +141,59 @@ class TestDecentralizedTransport(unittest.IsolatedAsyncioTestCase):
         await node_c.start()
 
         try:
-            # Topology setup: A connects to B, C connects to B
+            # Topology setup: A connects to B, C connects to B (no direct link between A and C)
             await node_a.connect_peer("127.0.0.1", 19212, node_b_sk.public_key())
             await node_c.connect_peer("127.0.0.1", 19212, node_b_sk.public_key())
 
             await asyncio.sleep(0.15)
 
-            # Node A sends direct message to Node C
+            # Node A sends E2EE message to Node C routed through intermediate Node B
             relay_payload = b"Multi-hop blind post-quantum onion payload"
-            sent = await node_a.send_direct(node_c.peer_id, relay_payload)
-            self.assertFalse(sent)  # Will fail because E2EE relay wrapper is not implemented in tests
+            sent = await node_a.send_message_to_peer(
+                target_peer_id=node_c.peer_id,
+                message=relay_payload,
+                target_pk=node_c_sk.public_key(),
+                force_relay=True,
+            )
+            self.assertTrue(sent)
 
-            self.assertEqual(len(c_received), 0)
+            await asyncio.wait_for(c_event.wait(), timeout=5.0)
+
+            # Destination Node C successfully authenticated and decrypted the payload
+            self.assertEqual(len(c_received), 1)
+            origin, data = c_received[0]
+            self.assertEqual(origin, node_a.peer_id)
+            self.assertEqual(data, relay_payload)
+
+            # Intermediate Relay Node B observed zero application plaintext
+            self.assertEqual(len(b_received), 0)
+
+            # Verify two-way communication: Node C replies to Node A over relay mesh
+            a_received = []
+            a_event = asyncio.Event()
+            node_a.on_message_received = lambda o, d: (a_received.append((o, d)), a_event.set())
+
+            reply_payload = b"Post-quantum ratcheted response across blind relay"
+            sent_reply = await node_c.send_message_to_peer(
+                target_peer_id=node_a.peer_id,
+                message=reply_payload,
+                target_pk=node_a_sk.public_key(),
+                force_relay=True,
+            )
+            self.assertTrue(sent_reply)
+            await asyncio.wait_for(a_event.wait(), timeout=5.0)
+
+            self.assertEqual(len(a_received), 1)
+            self.assertEqual(a_received[0], (node_c.peer_id, reply_payload))
+            self.assertEqual(len(b_received), 0)
+
+            # Verify security policy guard: raw unencrypted payloads cannot be relayed
+            with self.assertRaises(ValueError):
+                await node_a.send_relayed(
+                    target_peer_id=node_c.peer_id,
+                    e2ee_payload=b"Insecure raw chat bytes",
+                    msg_type=P2PMessageEnvelope.TYPE_CHAT_DATA,
+                )
 
         finally:
             await node_a.stop()
