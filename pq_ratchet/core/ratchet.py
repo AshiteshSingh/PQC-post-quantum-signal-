@@ -85,7 +85,7 @@ class PQRatchetSession:
         cls,
         local_identity: IdentityPrivateKey,
         init_packet_bytes: bytes,
-        expected_remote_identity: Optional[IdentityPublicKey] = None,
+        expected_remote_identity: IdentityPublicKey,
     ) -> Tuple["PQRatchetSession", bytes]:
         """
         Responds to inbound handshake (Bob <- Alice).
@@ -95,9 +95,8 @@ class PQRatchetSession:
         init_pkt = HandshakeInitPacket.deserialize(init_packet_bytes)
 
         sender_id_pk = IdentityPublicKey.from_bytes(init_pkt.sender_identity_pk_bytes)
-        if expected_remote_identity is not None:
-            if sender_id_pk.to_bytes() != expected_remote_identity.to_bytes():
-                raise PermissionError("Initiator identity does not match expected peer public key")
+        if sender_id_pk.to_bytes() != expected_remote_identity.to_bytes():
+            raise PermissionError("Initiator identity does not match expected peer public key")
 
         # Verify ML-DSA-65 signature on initiator ephemeral key
         expected_signed_payload = DOMAIN_AUTH_TRANSCRIPT + init_pkt.ephemeral_kem_pk_bytes
@@ -207,6 +206,9 @@ class PQRatchetSession:
         self._pending_kem_ct = next_kem_ct.to_bytes()
         self._pending_next_kem_pk = alice_next_pk.to_bytes()
 
+        # Epoch advancement: first outbound asymmetric ratchet generation
+        self.state.epoch += 1
+
     def ratchet_encrypt(self, plaintext: bytes) -> bytes:
         """
         Symmetric ratchet encryption with ChaCha20-Poly1305.
@@ -275,32 +277,41 @@ class PQRatchetSession:
             return pt
 
         # Case 2: Asymmetric Ratchet step present
-        if packet.kem_ct is not None and self.state.local_ephem_sk is not None:
+        
+        # We must draft the new state but NOT commit it until AEAD succeeds.
+        draft_root_key = self.state.root_key
+        draft_recv_chain = self.state.receiving_chain_key
+        draft_send_chain = self.state.sending_chain_key
+        draft_remote_ephem_pk = self.state.remote_ephem_pk
+        draft_local_ephem_sk = self.state.local_ephem_sk
+        draft_pending_kem_ct = self._pending_kem_ct
+        draft_pending_next_kem_pk = self._pending_next_kem_pk
+        draft_epoch = self.state.epoch
+        draft_recv_seq = self.state.receiving_seq
+        draft_send_seq = self.state.sending_seq
+
+        if packet.kem_ct is not None and draft_local_ephem_sk is not None:
             kem_ct = HybridKEMCiphertext.from_bytes(packet.kem_ct)
-            shared_secret = self.state.local_ephem_sk.decapsulate(kem_ct)
+            shared_secret = draft_local_ephem_sk.decapsulate(kem_ct)
 
             # Advance root key and derive new receiving chain key
             new_root, new_recv_chain = asymmetric_ratchet_kdf(
-                root_key=bytes(self.state.root_key),
+                root_key=bytes(draft_root_key),
                 combined_shared_secret=shared_secret,
                 context=DOMAIN_ASYM_RATCHET,
             )
-            self.state.root_key = bytearray(new_root)
-            if self.state.receiving_chain_key is not None:
-                zeroize(self.state.receiving_chain_key)
-            self.state.receiving_chain_key = bytearray(new_recv_chain)
+            draft_root_key = bytearray(new_root)
+            draft_recv_chain = bytearray(new_recv_chain)
 
             # Reset receiving sequence for new epoch
-            self.state.receiving_seq = 0
-            self.state.epoch = packet.epoch
-
-            # Destroy old ephemeral private key (Forward Secrecy)
-            self.state.local_ephem_sk = None
+            draft_recv_seq = 0
+            draft_epoch = packet.epoch
+            draft_local_ephem_sk = None
 
             # Process peer's next KEM public key if provided
             if packet.next_kem_pk is not None:
                 peer_next_pk = HybridKEMPublicKey.from_bytes(packet.next_kem_pk)
-                self.state.remote_ephem_pk = peer_next_pk
+                draft_remote_ephem_pk = peer_next_pk
 
                 # Sample local fresh ephemeral keypair and encapsulate
                 local_next_sk = HybridKEMPrivateKey.generate()
@@ -308,40 +319,66 @@ class PQRatchetSession:
                 next_ct, next_ss = peer_next_pk.encapsulate()
 
                 final_root, new_send_chain = asymmetric_ratchet_kdf(
-                    root_key=bytes(self.state.root_key),
+                    root_key=bytes(draft_root_key),
                     combined_shared_secret=next_ss,
                     context=DOMAIN_ASYM_RATCHET,
                 )
-                self.state.root_key = bytearray(final_root)
-                if self.state.sending_chain_key is not None:
-                    zeroize(self.state.sending_chain_key)
-                self.state.sending_chain_key = bytearray(new_send_chain)
-                self.state.sending_seq = 0
-                self.state.local_ephem_sk = local_next_sk
+                draft_root_key = bytearray(final_root)
+                draft_send_chain = bytearray(new_send_chain)
+                draft_send_seq = 0
+                draft_local_ephem_sk = local_next_sk
 
-                self._pending_kem_ct = next_ct.to_bytes()
-                self._pending_next_kem_pk = local_next_pk.to_bytes()
+                draft_pending_kem_ct = next_ct.to_bytes()
+                draft_pending_next_kem_pk = local_next_pk.to_bytes()
+                draft_epoch = packet.epoch + 1
 
         # Step symmetric receiving chain
-        if self.state.receiving_chain_key is None:
+        if draft_recv_chain is None:
             raise RuntimeError("Receiving chain key not available for decryption")
 
         # Fast-forward chain if out-of-order packet (seq > receiving_seq)
-        while self.state.receiving_seq < packet.seq:
-            next_chain, skipped_key = symmetric_chain_step(bytes(self.state.receiving_chain_key))
-            zeroize(self.state.receiving_chain_key)
-            self.state.receiving_chain_key = bytearray(next_chain)
-            self.state.store_skipped_key(packet.epoch, self.state.receiving_seq, skipped_key)
-            self.state.receiving_seq += 1
+        skipped_keys = []
+        while draft_recv_seq < packet.seq:
+            next_chain, skipped_key = symmetric_chain_step(bytes(draft_recv_chain))
+            draft_recv_chain = bytearray(next_chain)
+            skipped_keys.append((packet.epoch, draft_recv_seq, skipped_key))
+            draft_recv_seq += 1
 
         # Current message key
-        next_chain, message_key = symmetric_chain_step(bytes(self.state.receiving_chain_key))
-        zeroize(self.state.receiving_chain_key)
-        self.state.receiving_chain_key = bytearray(next_chain)
-        self.state.receiving_seq += 1
+        next_chain, message_key = symmetric_chain_step(bytes(draft_recv_chain))
+        draft_recv_chain = bytearray(next_chain)
+        draft_recv_seq += 1
 
         aead = ChaCha20Poly1305(message_key)
-        plaintext = aead.decrypt(nonce, packet.ciphertext, ad)
+        try:
+            plaintext = aead.decrypt(nonce, packet.ciphertext, ad)
+        except Exception:
+            # Authentication failed! Do not commit the draft state.
+            zeroize(bytearray(message_key))
+            raise ValueError("Cryptographic verification failure: invalid AEAD tag")
+
+        # Decryption succeeded. Commit state safely.
+        if self.state.receiving_chain_key is not None:
+            zeroize(self.state.receiving_chain_key)
+        if self.state.sending_chain_key is not None and draft_send_chain is not self.state.sending_chain_key:
+            zeroize(self.state.sending_chain_key)
+        if self.state.local_ephem_sk is not None and draft_local_ephem_sk is not self.state.local_ephem_sk:
+            # The old SK is implicitly discarded / no longer referenced
+            pass
+
+        self.state.root_key = draft_root_key
+        self.state.receiving_chain_key = draft_recv_chain
+        self.state.sending_chain_key = draft_send_chain
+        self.state.remote_ephem_pk = draft_remote_ephem_pk
+        self.state.local_ephem_sk = draft_local_ephem_sk
+        self._pending_kem_ct = draft_pending_kem_ct
+        self._pending_next_kem_pk = draft_pending_next_kem_pk
+        self.state.epoch = draft_epoch
+        self.state.receiving_seq = draft_recv_seq
+        self.state.sending_seq = draft_send_seq
+        
+        for ep, sq, key in skipped_keys:
+            self.state.store_skipped_key(ep, sq, key)
 
         mk_buf = bytearray(message_key)
         zeroize(mk_buf)

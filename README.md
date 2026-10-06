@@ -199,11 +199,36 @@ Peer-to-peer secure terminal chat where every keystroke and turn ratchets forwar
 # Node A (Listen)
 $ pq-ratchet chat listen --addr 0.0.0.0:9000 --key alice.key --peer-pub bob.pub
 
-# Node B (Connect)
+# Node B (Connect directly)
 $ pq-ratchet chat connect --addr 192.168.1.50:9000 --key bob.key --peer-pub alice.pub
+
+# Node B (Connect anonymously via Tor to a .onion endpoint or clearnet host)
+$ pq-ratchet chat connect --addr expyuzz...onion:9000 --key bob.key --peer-pub alice.pub --via-tor
 ```
 
-### 5. Run Live Benchmarks
+### 5. Decentralized Peer-to-Peer (P2P) Overlay Mesh
+Eliminates central relay servers completely. Nodes form an autonomous mesh with self-authenticating PeerIDs (`pqc_<32-hex>`), dynamic Peer Exchange (PEX), and multi-hop blind relaying:
+
+```bash
+# Start a decentralized P2P routing node
+$ pq-ratchet p2p node --key node.key --listen 0.0.0.0:9100 --bootstrap 192.168.1.10:9100
+
+# Chat directly with any peer in the swarm using their self-authenticating PeerID
+$ pq-ratchet p2p chat --key client.key --target-peer pqc_9a4f82b7... --bootstrap 192.168.1.10:9100
+```
+
+### 6. Tor v3 Onion Service Hosting (100% Free Decentralized Web / Transport)
+Host the post-quantum web messenger or transport services over Tor darknet without ICANN domain registration or public IP exposure:
+
+```bash
+# Check if local Tor SOCKS5 daemon is available
+$ pq-ratchet tor status --proxy 127.0.0.1:9050
+
+# Generate production torrc snippet for Tor v3 hidden service
+$ pq-ratchet tor onion-gen --dir /var/lib/tor/pq_ratchet_service/ --virtual-port 80 --target-port 8000
+```
+
+### 7. Run Live Benchmarks
 ```bash
 $ pq-ratchet benchmark
 ```

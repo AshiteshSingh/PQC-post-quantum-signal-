@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Chat</title>
+  <title>PQ-Ratchet — Zero-Trust Post-Quantum E2EE</title>
   <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
@@ -12,18 +12,32 @@
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body class="dark-theme">
-  <!-- Minimalist Top Navigation -->
+  <!-- Top Navigation with Post-Quantum Security Metrics -->
   <header class="navbar" id="main-header">
     <div class="nav-left">
       <div class="user-avatar" id="header-avatar">?</div>
       <div class="user-info">
-        <span class="user-name" id="display-peer-name">Direct Chat</span>
-        <span class="user-status" id="display-peer-status">Offline</span>
+        <div class="user-name-row">
+          <span class="user-name" id="display-peer-name">Direct Chat</span>
+          <span class="pqc-pill hidden" id="pqc-pill">ML-KEM-768 ⊕ X25519</span>
+        </div>
+        <div class="user-status-row">
+          <span class="user-status" id="display-peer-status">Offline</span>
+          <span class="peer-fingerprint hidden" id="peer-fingerprint" title="Verified ML-DSA-65 identity key"></span>
+        </div>
       </div>
     </div>
 
     <div class="nav-right">
-      <div class="session-timer" id="ttl-container" title="Session time remaining">
+      <div class="pqc-shield-badge" id="shield-badge" title="Zero-Trust End-to-End Encryption active in browser memory">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+          <path d="m9 12 2 2 4-4"></path>
+        </svg>
+        <span id="shield-text">Client PQC</span>
+      </div>
+
+      <div class="session-timer" id="ttl-container" title="Session time remaining (ephemeral lifetime)">
         <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="12" cy="12" r="10"></circle>
           <polyline points="12 6 12 12 16 14"></polyline>
@@ -31,7 +45,7 @@
         <span id="ttl-display">60:00</span>
       </div>
 
-      <button class="nav-btn clear-btn hidden" id="btn-clear-chat" title="Clear chat for both users">
+      <button class="nav-btn clear-btn hidden" id="btn-clear-chat" title="Clear chat history and step forward ratchet keys">
         <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
           <polyline points="3 6 5 6 21 6"></polyline>
           <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
@@ -45,10 +59,12 @@
   <main class="chat-layout">
     <section class="messages-viewport" id="messages-container">
       
-      <!-- Connect Peer Bar (Shown before a peer is connected) -->
+      <!-- Connect Peer Card (Shown before a peer is connected) -->
       <div class="peer-pairing-card" id="peer-pairing-box">
-        <h3>New Chat</h3>
+        <div class="pairing-badge">Zero-Server-Trust Post-Quantum E2EE</div>
+        <h3>Secure Session Setup</h3>
         <p class="pairing-sub">Logged in as <strong id="current-user-tag" class="text-user">...</strong></p>
+        <p class="my-fingerprint-text">Your Identity: <code id="my-fingerprint-code">generating keys...</code></p>
 
         <form id="connect-peer-form" class="pairing-form">
           <input 
@@ -60,14 +76,33 @@
             maxlength="25"
           >
           <button type="submit" class="submit-btn-inline" id="btn-call-peer">
-            <span>Start</span>
+            <span>Connect</span>
           </button>
         </form>
 
         <div class="online-peers-container">
-          <span class="online-label">Available users</span>
+          <span class="online-label">Available online users</span>
           <div class="online-chips-list" id="online-users-list">
-            <span class="empty-hint">No other users online</span>
+            <span class="empty-hint">Scanning for users...</span>
+          </div>
+        </div>
+
+        <div class="security-spec-card">
+          <div class="spec-item">
+            <span class="spec-label">Key Encapsulation:</span>
+            <span class="spec-val">ML-KEM-768 (FIPS 203) ⊕ X25519 (Hybrid IND-CCA2)</span>
+          </div>
+          <div class="spec-item">
+            <span class="spec-label">Identity Authentication:</span>
+            <span class="spec-val">ML-DSA-65 (FIPS 204 EUF-CMA)</span>
+          </div>
+          <div class="spec-item">
+            <span class="spec-label">Symmetric Cipher:</span>
+            <span class="spec-val">ChaCha20-Poly1305 (AEAD) + HKDF-SHA3-512 Ratchet</span>
+          </div>
+          <div class="spec-item">
+            <span class="spec-label">Server Trust Level:</span>
+            <span class="spec-val text-green">Zero-Trust Blind Relay (Plaintext NEVER leaves browser)</span>
           </div>
         </div>
       </div>
@@ -84,7 +119,7 @@
         type="text" 
         id="chat-input" 
         class="chat-input" 
-        placeholder="Type a message..." 
+        placeholder="Type a message (E2EE encrypted with client-side ratchet)..." 
         autocomplete="off" 
         disabled
       >
@@ -100,15 +135,21 @@
   <!-- Username Setup Modal -->
   <div class="modal-backdrop" id="join-modal">
     <div class="modal-card">
-      <h2>Welcome</h2>
-      <p class="modal-subtitle">Choose a username to start chatting.</p>
+      <div class="modal-icon-shield">
+        <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#10b981" stroke-width="2">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+          <path d="m9 12 2 2 4-4"></path>
+        </svg>
+      </div>
+      <h2>PQ-Ratchet Web</h2>
+      <p class="modal-subtitle">Provably quantum-resistant end-to-end encrypted messaging. Ephemeral identity keypairs are sampled directly in your browser.</p>
 
       <form id="join-form">
         <div class="form-group">
-          <input type="text" id="input-username" class="form-input" placeholder="Your username" required autofocus maxlength="25">
+          <input type="text" id="input-username" class="form-input" placeholder="Choose a username" required autofocus maxlength="25">
         </div>
         <button type="submit" class="submit-btn" id="btn-join-session">
-          <span>Continue</span>
+          <span id="btn-join-text">Generate Keys & Continue</span>
         </button>
       </form>
     </div>
@@ -116,6 +157,9 @@
 
   <div class="toast-stack" id="toast-stack"></div>
 
+  <!-- Client-Side Post-Quantum Cryptographic Engine Bundle -->
+  <script src="/static/pq-crypto.bundle.js"></script>
+  <!-- Application Controller -->
   <script src="/static/app.js"></script>
 </body>
 </html>

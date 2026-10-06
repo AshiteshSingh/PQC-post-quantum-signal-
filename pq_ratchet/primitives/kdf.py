@@ -4,6 +4,7 @@ Post-Quantum Key Derivation Functions and Dual-PRF Combiners.
 """
 
 from typing import Tuple, Optional
+import ctypes
 import hmac as std_hmac
 from cryptography.hazmat.primitives import hashes, hmac
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -20,12 +21,18 @@ from pq_ratchet.constants import (
 
 def zeroize(buf: bytearray) -> None:
     """
-    Constant-time memory clearing primitive.
+    Memory clearing primitive via ctypes.memset on the underlying C buffer.
+    Reduces dead-store elimination risk compared to Python-level assignment.
     Invariant: Overwrites memory in-place prior to deallocation.
     Complexity: O(N) where N = len(buf).
     """
-    for i in range(len(buf)):
-        buf[i] = 0
+    if not buf:
+        return
+    try:
+        ctypes.memset((ctypes.c_char * len(buf)).from_buffer(buf), 0, len(buf))
+    except (TypeError, ValueError):
+        for i in range(len(buf)):
+            buf[i] = 0
 
 
 def constant_time_compare(a: bytes, b: bytes) -> bool:

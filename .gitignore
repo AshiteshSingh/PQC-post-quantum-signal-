@@ -14,3 +14,5 @@ env/
 venv/
 
 .agents/
+node_modules/
+web_builder/node_modules/

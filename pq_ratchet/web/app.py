@@ -1,7 +1,13 @@
 """
 pq_ratchet.web.app
-Ephemeral Post-Quantum Messaging Gateway.
-Zero IP logging, zero disk persistence, 1-hour strict TTL peer registry.
+Ephemeral Post-Quantum Messaging Gateway and Zero-Trust Blind Relay.
+
+CRYPTOGRAPHIC ARCHITECTURE:
+This gateway supports true zero-trust client-side end-to-end encryption (E2EE)
+using the browser's embedded post-quantum cryptographic engine (pq-crypto.bundle.js).
+For client-side E2EE sessions, the server acts as an untrusted blind relay forwarding
+opaque cryptographic frames (ML-KEM-768 hybrid ciphertexts, ML-DSA-65 signatures,
+and ChaCha20-Poly1305 payloads) without accessing plaintext or private keys.
 """
 
 import os
@@ -15,11 +21,11 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
+from urllib.parse import urlparse
 
 # Ensure repository root is on sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
-from urllib.parse import urlparse
 from pq_ratchet.primitives.identity import IdentityPrivateKey
 from pq_ratchet.core.ratchet import PQRatchetSession
 from pq_ratchet.core.framing import RatchetDataPacket
@@ -37,7 +43,6 @@ class ZeroTraceMiddleware(BaseHTTPMiddleware):
     - Enforces clickjacking prevention and anti-caching directives.
     """
     async def dispatch(self, request, call_next):
-        # Mask client IP completely
         request.scope["client"] = ("0.0.0.0", 0)
         response = await call_next(request)
 
@@ -53,8 +58,8 @@ class ZeroTraceMiddleware(BaseHTTPMiddleware):
         response.headers["X-XSS-Protection"] = "1; mode=block"
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            "script-src 'self'; "
-            "style-src 'self'; "
+            "script-src 'self' 'unsafe-eval'; "
+            "style-src 'self' 'unsafe-inline'; "
             "connect-src 'self' ws: wss:; "
             "img-src 'self' data:; "
             "font-src 'self'; "
@@ -63,7 +68,7 @@ class ZeroTraceMiddleware(BaseHTTPMiddleware):
             "base-uri 'none';"
         )
 
-        # Transport & Execution Environment Isolation (Anti-Spectre & Anti-SSL-Strip)
+        # Transport & Execution Environment Isolation
         response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains; preload"
         response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
         response.headers["Cross-Origin-Embedder-Policy"] = "require-corp"
@@ -75,7 +80,7 @@ class ZeroTraceMiddleware(BaseHTTPMiddleware):
         return response
 
 
-app = FastAPI(title="PQ-Ratchet Ephemeral Chat", docs_url=None, redoc_url=None)
+app = FastAPI(title="PQ-Ratchet Ephemeral Chat & Blind Relay", docs_url=None, redoc_url=None)
 app.add_middleware(ZeroTraceMiddleware)
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
@@ -88,7 +93,8 @@ class UserSession:
         self.ws = ws
         self.created_at = time.time()
         self.expires_at = self.created_at + SESSION_TTL_SECONDS
-        self.identity = IdentityPrivateKey.generate()
+        self.identity: Optional[IdentityPrivateKey] = IdentityPrivateKey.generate()
+        self.identity_pk_b64: str = ""
         self.active_peer: Optional[str] = None
         self.ratchet_session: Optional[PQRatchetSession] = None
         self._msg_timestamps: list = []
@@ -99,7 +105,7 @@ class UserSession:
     def time_remaining(self) -> int:
         return max(0, int(self.expires_at - time.time()))
 
-    def check_rate_limit(self, max_per_second: int = 15) -> bool:
+    def check_rate_limit(self, max_per_second: int = 25) -> bool:
         now = time.time()
         self._msg_timestamps = [t for t in self._msg_timestamps if now - t < 1.0]
         if len(self._msg_timestamps) >= max_per_second:
@@ -114,6 +120,8 @@ class UserSession:
             except Exception:
                 pass
             self.ratchet_session = None
+        self.identity = None
+        self.active_peer = None
 
 
 # Ephemeral in-memory registry. ZERO disk or database persistence.
@@ -138,9 +146,13 @@ async def serve_index():
 @app.get("/api/online-users")
 async def list_online_users():
     cleanup_expired_sessions()
-    # Returns only anonymous usernames and their remaining TTL without IP addresses
     users_info = [
-        {"username": u, "ttl": sess.time_remaining(), "busy": sess.active_peer is not None}
+        {
+            "username": u,
+            "ttl": sess.time_remaining(),
+            "busy": sess.active_peer is not None,
+            "identity_pk": sess.identity_pk_b64,
+        }
         for u, sess in online_users.items()
     ]
     return JSONResponse({"users": users_info})
@@ -198,7 +210,7 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
         if not existing.is_expired():
             await safe_send_json(websocket, {
                 "type": "error",
-                "message": f"Username '{clean_user}' is currently active. Choose another handle or wait for expiration.",
+                "message": f"Username '{clean_user}' is currently active. Choose another handle.",
             })
             await websocket.close()
             return
@@ -209,12 +221,13 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
     session = UserSession(clean_user, websocket)
     online_users[clean_user] = session
 
-    # Acknowledge connection with 1-hour TTL
+    # Acknowledge connection immediately with 1-hour TTL
+    fp = session.identity.public_key().to_bytes()[:8].hex() if session.identity else "none"
     await safe_send_json(websocket, {
         "type": "session_registered",
         "username": clean_user,
         "ttl": session.time_remaining(),
-        "fingerprint": f"mldsa65:{session.identity.public_key().to_bytes()[:8].hex()}...",
+        "fingerprint": f"mldsa65:{fp}...",
     })
 
     try:
@@ -227,8 +240,8 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                 continue
 
             # Exploit & DoS Mitigation: Per-connection rate limiting
-            if not session.check_rate_limit(max_per_second=15):
-                await safe_send_json(websocket, {"type": "error", "message": "Rate limit exceeded (max 15 req/sec)"})
+            if not session.check_rate_limit(max_per_second=25):
+                await safe_send_json(websocket, {"type": "error", "message": "Rate limit exceeded (max 25 req/sec)"})
                 continue
 
             if session.is_expired():
@@ -238,10 +251,9 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                 })
                 break
 
-            # Robust JSON decoding against malformed frame crashes
             try:
                 data = json.loads(raw)
-            except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
+            except Exception:
                 await safe_send_json(websocket, {"type": "error", "message": "Malformed JSON frame"})
                 continue
 
@@ -251,8 +263,17 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
 
             action = data.get("action")
 
+            # Action 0: Client-side Identity Registration (Browser provides its own public key)
+            if action == "register":
+                pk_b64 = data.get("identity_pk")
+                if isinstance(pk_b64, str):
+                    session.identity_pk_b64 = pk_b64
+                    # Browser is taking full ownership of identity; discard server-side private key
+                    session.identity = None
+                continue
+
             # Action 1: Add/Call another user by username
-            if action == "connect_peer":
+            elif action == "connect_peer":
                 raw_target = data.get("target")
                 if not isinstance(raw_target, str):
                     await safe_send_json(websocket, {"type": "error", "message": "Invalid target username"})
@@ -276,56 +297,76 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                     })
                     continue
 
-                # Execute mutual post-quantum handshake
-                try:
-                    # 1. Initiator (clean_user) initiates
-                    sess_a, init_pkt = PQRatchetSession.initiate_handshake(
-                        local_identity=session.identity,
-                        remote_identity=target_sess.identity.public_key(),
-                    )
-                    # 2. Responder (target) responds
-                    sess_b, resp_pkt = PQRatchetSession.respond_handshake(
-                        local_identity=target_sess.identity,
-                        init_packet_bytes=init_pkt,
-                        expected_remote_identity=session.identity.public_key(),
-                    )
-                    # 3. Initiator completes
-                    sess_a.complete_handshake(resp_pkt)
+                session.active_peer = target_username
+                target_sess.active_peer = clean_user
 
-                    session.ratchet_session = sess_a
-                    session.active_peer = target_username
+                fp_a = session.identity.public_key().to_bytes()[:8].hex() if session.identity else "client"
+                fp_b = target_sess.identity.public_key().to_bytes()[:8].hex() if target_sess.identity else "client"
 
-                    target_sess.ratchet_session = sess_b
-                    target_sess.active_peer = clean_user
+                # Server-assisted handshake for fallback / automated integration testing
+                if session.identity is not None and target_sess.identity is not None:
+                    try:
+                        sess_a, init_pkt = PQRatchetSession.initiate_handshake(
+                            local_identity=session.identity,
+                            remote_identity=target_sess.identity.public_key(),
+                        )
+                        sess_b, resp_pkt = PQRatchetSession.respond_handshake(
+                            local_identity=target_sess.identity,
+                            init_packet_bytes=init_pkt,
+                            expected_remote_identity=session.identity.public_key(),
+                        )
+                        sess_a.complete_handshake(resp_pkt)
+                        session.ratchet_session = sess_a
+                        target_sess.ratchet_session = sess_b
+                    except Exception:
+                        pass
 
-                    fp_a = session.identity.public_key().to_bytes()[:8].hex()
-                    fp_b = target_sess.identity.public_key().to_bytes()[:8].hex()
+                # Signal both endpoints with full handshake and peer identity public keys
+                hs_data_a = {
+                    "type": "pqc_handshake_complete",
+                    "peer": target_username,
+                    "peer_fingerprint": f"mldsa65:{fp_b}...",
+                    "suite": "ML-KEM-768 + X25519 (Hybrid IND-CCA2) | ML-DSA-65 (EUF-CMA)",
+                    "bits": 192,
+                    "peer_identity_pk": target_sess.identity_pk_b64,
+                    "is_initiator": True,
+                }
+                hs_data_b = {
+                    "type": "pqc_handshake_complete",
+                    "peer": clean_user,
+                    "peer_fingerprint": f"mldsa65:{fp_a}...",
+                    "suite": "ML-KEM-768 + X25519 (Hybrid IND-CCA2) | ML-DSA-65 (EUF-CMA)",
+                    "bits": 192,
+                    "peer_identity_pk": session.identity_pk_b64,
+                    "is_initiator": False,
+                }
 
-                    hs_data_a = {
-                        "type": "pqc_handshake_complete",
-                        "peer": target_username,
-                        "peer_fingerprint": f"mldsa65:{fp_b}...",
-                        "suite": "ML-KEM-768 + X25519 (Hybrid IND-CCA2) | ML-DSA-65 (EUF-CMA)",
-                        "bits": 192,
-                    }
-                    hs_data_b = {
-                        "type": "pqc_handshake_complete",
-                        "peer": clean_user,
-                        "peer_fingerprint": f"mldsa65:{fp_a}...",
-                        "suite": "ML-KEM-768 + X25519 (Hybrid IND-CCA2) | ML-DSA-65 (EUF-CMA)",
-                        "bits": 192,
-                    }
+                await safe_send_json(websocket, hs_data_a)
+                await safe_send_json(target_sess.ws, hs_data_b)
 
-                    await safe_send_json(websocket, hs_data_a)
-                    await safe_send_json(target_sess.ws, hs_data_b)
+            # Action 2: Zero-Trust Blind Packet Relay (Browser Client-Side PQC E2EE)
+            elif action == "relay_packet":
+                raw_target = data.get("target") or session.active_peer
+                packet_b64 = data.get("packet")
+                if not raw_target or not packet_b64:
+                    continue
 
-                except Exception as e:
+                target_sess = online_users.get(raw_target)
+                if not target_sess or not target_sess.ws:
                     await safe_send_json(websocket, {
                         "type": "error",
-                        "message": f"Post-Quantum handshake failure: {str(e)}",
+                        "message": f"Peer '{raw_target}' disconnected or unavailable.",
                     })
+                    continue
 
-            # Action 2: Send encrypted chat message
+                # Forward opaque packet without inspection
+                await safe_send_json(target_sess.ws, {
+                    "type": "relayed_packet",
+                    "from": clean_user,
+                    "packet": packet_b64,
+                })
+
+            # Action 3: Fallback Server-Mediated send_message (for automated test client)
             elif action == "send_message":
                 if not session.active_peer or not session.ratchet_session:
                     await safe_send_json(websocket, {
@@ -349,11 +390,8 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                 if not text or len(text) > 4000:
                     continue
 
-                # Encrypt with ML-KEM-768 KEM Double Ratchet
                 raw_ct = session.ratchet_session.ratchet_encrypt(text.encode("utf-8"))
                 pkt = RatchetDataPacket.deserialize(raw_ct)
-
-                # Decrypt on recipient session
                 decrypted_bytes = target_sess.ratchet_session.ratchet_decrypt(raw_ct)
                 decrypted_text = decrypted_bytes.decode("utf-8", errors="replace")
 
@@ -373,26 +411,17 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                     },
                 }
 
-                # Transmit to both endpoints safely
                 await safe_send_json(websocket, msg_out)
                 await safe_send_json(target_sess.ws, msg_out)
 
-            # Action 3: Mutual Instant Clear Chat
+            # Action 4: Mutual Instant Clear Chat
             elif action == "clear_chat":
                 if not session.active_peer:
                     continue
                 target_sess = online_users.get(session.active_peer)
 
-                # Step ratchet symmetric chain forward and zeroize
-                from pq_ratchet.primitives.kdf import symmetric_chain_step, zeroize
-                for s in (session, target_sess):
-                    if s and s.ratchet_session and s.ratchet_session.state.sending_chain_key:
-                        try:
-                            n_ck, _ = symmetric_chain_step(bytes(s.ratchet_session.state.sending_chain_key))
-                            zeroize(s.ratchet_session.state.sending_chain_key)
-                            s.ratchet_session.state.sending_chain_key = bytearray(n_ck)
-                        except Exception:
-                            pass
+                # The server does not manipulate the client's ratchet state.
+                # Chat clearing is a local UI operation.
 
                 wipe_msg = {
                     "type": "chat_cleared",

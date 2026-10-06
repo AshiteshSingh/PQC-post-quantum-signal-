@@ -79,25 +79,33 @@ class HybridKEMPublicKey:
         Returns (HybridKEMCiphertext, combined_shared_secret).
         Complexity: O(N log N) for NTT polynomial multiplication + O(1) group scalar mult.
         """
-        ss_kem, ct_kem = self.mlkem_pk.encapsulate()
+        ss_kem_buf = bytearray()
+        ss_ec_buf = bytearray()
+        try:
+            ss_kem, ct_kem = self.mlkem_pk.encapsulate()
+            ss_kem_buf = bytearray(ss_kem)
 
-        ephem_ec_sk = x25519.X25519PrivateKey.generate()
-        ephem_ec_pk = ephem_ec_sk.public_key()
-        ss_ec = ephem_ec_sk.exchange(self.x25519_pk)
+            ephem_ec_sk = x25519.X25519PrivateKey.generate()
+            ephem_ec_pk = ephem_ec_sk.public_key()
+            ss_ec = ephem_ec_sk.exchange(self.x25519_pk)
+            ss_ec_buf = bytearray(ss_ec)
 
-        combined_ss = dual_prf_combine(
-            salt=b"",
-            ml_kem_secret=ss_kem,
-            x25519_secret=ss_ec,
-            context_info=DOMAIN_HYBRID_KEM,
-            output_len=32,
-        )
+            combined_ss = dual_prf_combine(
+                salt=b"",
+                ml_kem_secret=bytes(ss_kem_buf),
+                x25519_secret=bytes(ss_ec_buf),
+                context_info=DOMAIN_HYBRID_KEM,
+                output_len=32,
+            )
 
-        ciphertext = HybridKEMCiphertext(
-            mlkem_ct=ct_kem,
-            x25519_ephem_pk_bytes=ephem_ec_pk.public_bytes_raw(),
-        )
-        return ciphertext, combined_ss
+            ciphertext = HybridKEMCiphertext(
+                mlkem_ct=ct_kem,
+                x25519_ephem_pk_bytes=ephem_ec_pk.public_bytes_raw(),
+            )
+            return ciphertext, combined_ss
+        finally:
+            zeroize(ss_kem_buf)
+            zeroize(ss_ec_buf)
 
 
 class HybridKEMPrivateKey:
@@ -138,15 +146,23 @@ class HybridKEMPrivateKey:
         Security: IND-CCA2 preserved under quantum chosen-ciphertext adversary.
         Complexity: O(N log N) + O(1).
         """
-        peer_ephem_pk = x25519.X25519PublicKey.from_public_bytes(ciphertext.x25519_ephem_pk_bytes)
-        ss_ec = self.x25519_sk.exchange(peer_ephem_pk)
-        ss_kem = self.mlkem_sk.decapsulate(ciphertext.mlkem_ct)
+        ss_kem_buf = bytearray()
+        ss_ec_buf = bytearray()
+        try:
+            peer_ephem_pk = x25519.X25519PublicKey.from_public_bytes(ciphertext.x25519_ephem_pk_bytes)
+            ss_ec = self.x25519_sk.exchange(peer_ephem_pk)
+            ss_ec_buf = bytearray(ss_ec)
+            ss_kem = self.mlkem_sk.decapsulate(ciphertext.mlkem_ct)
+            ss_kem_buf = bytearray(ss_kem)
 
-        combined_ss = dual_prf_combine(
-            salt=b"",
-            ml_kem_secret=ss_kem,
-            x25519_secret=ss_ec,
-            context_info=DOMAIN_HYBRID_KEM,
-            output_len=32,
-        )
-        return combined_ss
+            combined_ss = dual_prf_combine(
+                salt=b"",
+                ml_kem_secret=bytes(ss_kem_buf),
+                x25519_secret=bytes(ss_ec_buf),
+                context_info=DOMAIN_HYBRID_KEM,
+                output_len=32,
+            )
+            return combined_ss
+        finally:
+            zeroize(ss_kem_buf)
+            zeroize(ss_ec_buf)

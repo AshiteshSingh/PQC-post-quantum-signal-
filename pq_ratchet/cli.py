@@ -63,16 +63,26 @@ def load_public_key(path: str) -> IdentityPublicKey:
     return IdentityPublicKey.from_bytes(raw_pk)
 
 
-async def run_pipe_send(target_host: str, target_port: int, key_path: str, peer_pub_path: str):
+async def run_pipe_send(
+    target_host: str,
+    target_port: int,
+    key_path: str,
+    peer_pub_path: str,
+    via_tor: bool = False,
+    tor_proxy: Optional[tuple[str, int]] = None,
+):
     sk = load_private_key(key_path)
     peer_pk = load_public_key(peer_pub_path)
 
-    sys.stderr.write(f"[*] Establishing Post-Quantum Ratchet channel to {target_host}:{target_port}...\n")
+    onion_note = " via Tor network" if (via_tor or target_host.endswith(".onion")) else ""
+    sys.stderr.write(f"[*] Establishing Post-Quantum Ratchet channel to {target_host}:{target_port}{onion_note}...\n")
     session = await AsyncPQStreamSession.connect(
         host=target_host,
         port=target_port,
         local_identity=sk,
         remote_identity=peer_pk,
+        via_tor=via_tor,
+        tor_proxy=tor_proxy,
     )
     sys.stderr.write(f"[+] Quantum-safe E2EE channel established (ML-KEM-768 + X25519 hybrid).\n")
     sys.stderr.write(f"[*] Streaming stdin -> encrypted pipe...\n")
@@ -130,7 +140,15 @@ async def run_pipe_recv(listen_host: str, listen_port: int, key_path: str, peer_
     sys.stderr.write(f"[+] Pipe closed and memory zeroized.\n")
 
 
-async def run_chat(mode: str, host: str, port: int, key_path: str, peer_pub_path: Optional[str]):
+async def run_chat(
+    mode: str,
+    host: str,
+    port: int,
+    key_path: str,
+    peer_pub_path: Optional[str],
+    via_tor: bool = False,
+    tor_proxy: Optional[tuple[str, int]] = None,
+):
     sk = load_private_key(key_path)
     peer_pk = load_public_key(peer_pub_path) if peer_pub_path else None
 
@@ -149,8 +167,16 @@ async def run_chat(mode: str, host: str, port: int, key_path: str, peer_pub_path
         print(f"[*] Waiting for peer on {host}:{port}...")
         await connected.wait()
     else:
-        print(f"[*] Connecting to {host}:{port} and executing PQC Handshake...")
-        session = await AsyncPQStreamSession.connect(host, port, sk, peer_pk)
+        onion_note = " via Tor" if (via_tor or host.endswith(".onion")) else ""
+        print(f"[*] Connecting to {host}:{port}{onion_note} and executing PQC Handshake...")
+        session = await AsyncPQStreamSession.connect(
+            host=host,
+            port=port,
+            local_identity=sk,
+            remote_identity=peer_pk,
+            via_tor=via_tor,
+            tor_proxy=tor_proxy,
+        )
         print(f"[+] Secure channel active! Every message ratchets forward. Type and hit Enter:\n")
         connected.set()
 
@@ -191,6 +217,122 @@ async def run_chat(mode: str, host: str, port: int, key_path: str, peer_pub_path
     await session.close()
 
 
+async def run_p2p_node(listen_host: str, listen_port: int, key_path: str, bootstrap_nodes: list[str]):
+    """Runs a standalone decentralized P2P mesh node."""
+    from pq_ratchet.transport.p2p import PQP2PNode
+    sk = load_private_key(key_path)
+    node = PQP2PNode(local_identity=sk, listen_host=listen_host, listen_port=listen_port)
+    await node.start()
+
+    print(f"[+] Post-Quantum P2P Overlay Node initialized.")
+    print(f"    PeerID:   {node.peer_id}")
+    print(f"    Endpoint: {listen_host}:{listen_port}")
+
+    if bootstrap_nodes:
+        boot_list = []
+        for b in bootstrap_nodes:
+            parts = b.split(":")
+            boot_list.append((parts[0], int(parts[1])))
+        print(f"[*] Bootstrapping into {len(boot_list)} peer nodes...")
+        connected = await node.bootstrap(boot_list)
+        print(f"[+] Successfully connected to {connected} bootstrap peers.")
+
+    print(f"[*] Swarm active. Operating zero-trust blind relay mesh. Press Ctrl+C to terminate.\n")
+    try:
+        while True:
+            await asyncio.sleep(3600)
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        pass
+    finally:
+        await node.stop()
+        print(f"[+] P2P Node cleanly stopped.")
+
+
+async def run_p2p_chat(key_path: str, target_peer_id: str, listen_port: int, bootstrap: Optional[str]):
+    """Decentralized P2P terminal chat via peer swarm routing."""
+    from pq_ratchet.transport.p2p import PQP2PNode
+    sk = load_private_key(key_path)
+    node = PQP2PNode(local_identity=sk, listen_host="0.0.0.0", listen_port=listen_port)
+    await node.start()
+
+    print(f"[+] Post-Quantum P2P Swarm Chat active.")
+    print(f"    Your PeerID:   {node.peer_id}")
+    print(f"    Target PeerID: {target_peer_id}\n")
+
+    def on_p2p_msg(origin: str, payload: bytes):
+        text = payload.decode("utf-8", errors="replace")
+        print(f"\n\033[92m[{origin[:12]}...]\033[0m {text}")
+        print("\033[94m[You]\033[0m ", end="", flush=True)
+
+    node.on_message_received = on_p2p_msg
+
+    if bootstrap:
+        bh, bp = bootstrap.split(":")
+        print(f"[*] Connecting to bootstrap node {bootstrap}...")
+        try:
+            await node.connect_peer(bh, int(bp))
+            print(f"[+] Connected to swarm mesh via {bootstrap}.")
+        except Exception as e:
+            print(f"[-] Warning: bootstrap connect failed: {e}")
+
+    async def p2p_send():
+        loop = asyncio.get_event_loop()
+        while True:
+            line = await loop.run_in_executor(None, sys.stdin.readline)
+            if not line:
+                break
+            txt = line.strip()
+            if txt:
+                sent = await node.send_relayed(target_peer_id, txt.encode("utf-8"))
+                if not sent:
+                    print(f"[-] Target peer not currently reachable in mesh.")
+            print("\033[94m[You]\033[0m ", end="", flush=True)
+
+    print("\033[94m[You]\033[0m ", end="", flush=True)
+    task = asyncio.create_task(p2p_send())
+    try:
+        await task
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        pass
+    finally:
+        await node.stop()
+
+
+async def run_tor_status(proxy_addr: str):
+    """Probes status of local Tor daemon."""
+    from pq_ratchet.transport.tor import AsyncTorConnector
+    ph, pp = proxy_addr.split(":")
+    try:
+        _, w = await asyncio.wait_for(asyncio.open_connection(ph, int(pp)), timeout=1.5)
+        w.close()
+        await w.wait_closed()
+        print(f"[+] Local Tor SOCKS5 daemon is ONLINE and responding at {proxy_addr}")
+        print(f"[+] Ready to route post-quantum encrypted streams through the Tor network.")
+    except Exception as e:
+        print(f"[-] Tor SOCKS5 daemon not detected at {proxy_addr} ({e})")
+        print(f"    Ensure Tor or Tor Browser is running locally.")
+
+
+def run_tor_onion_gen(service_dir: str, virtual_port: int, target_port: int):
+    """Generates Tor v3 Onion service configuration snippet."""
+    from pq_ratchet.transport.tor import TorHiddenServiceHelper
+    snippet = TorHiddenServiceHelper.generate_torrc_snippet(
+        service_dir=service_dir,
+        virtual_port=virtual_port,
+        target_port=target_port,
+    )
+    print("=" * 70)
+    print("POST-QUANTUM TOR v3 ONION SERVICE CONFIGURATION")
+    print("=" * 70)
+    print("Add the following lines to your /etc/tor/torrc or Tor configuration:")
+    print("-" * 70)
+    print(snippet)
+    print("-" * 70)
+    print(f"1. Save configuration and restart Tor: sudo systemctl restart tor")
+    print(f"2. Read your free .onion domain:       sudo cat {service_dir}/hostname")
+    print("=" * 70)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="pq-ratchet",
@@ -210,6 +352,9 @@ def main():
     p_pipe_send.add_argument("--to", required=True, help="Target host:port (e.g. 192.168.1.10:9000)")
     p_pipe_send.add_argument("--key", required=True, help="Sender private key path")
     p_pipe_send.add_argument("--peer-pub", required=True, help="Receiver public key path")
+
+    p_pipe_send.add_argument("--via-tor", action="store_true", help="Route encrypted pipe over Tor SOCKS5")
+    p_pipe_send.add_argument("--tor-proxy", default=None, help="Tor SOCKS5 proxy address (e.g. 127.0.0.1:9050)")
 
     p_pipe_recv = p_pipe_sub.add_parser("recv", help="Listen for inbound encrypted stream and emit to stdout")
     p_pipe_recv.add_argument("--listen", default="0.0.0.0:9000", help="Listen host:port (default: 0.0.0.0:9000)")
@@ -238,6 +383,35 @@ def main():
     p_chat.add_argument("--addr", default="127.0.0.1:9000", help="Host:port (default: 127.0.0.1:9000)")
     p_chat.add_argument("--key", required=True, help="Your identity private key")
     p_chat.add_argument("--peer-pub", help="Peer public key")
+    p_chat.add_argument("--via-tor", action="store_true", help="Connect via local Tor SOCKS5 daemon")
+    p_chat.add_argument("--tor-proxy", default=None, help="Tor SOCKS5 proxy host:port (e.g. 127.0.0.1:9050)")
+
+    # p2p (decentralized mesh)
+    p_p2p = subparsers.add_parser("p2p", help="Decentralized Peer-to-Peer post-quantum overlay network")
+    p_p2p_sub = p_p2p.add_subparsers(dest="p2p_mode", required=True)
+
+    p_p2p_node = p_p2p_sub.add_parser("node", help="Run standalone P2P overlay mesh node")
+    p_p2p_node.add_argument("--listen", default="0.0.0.0:9100", help="Listen host:port (default: 0.0.0.0:9100)")
+    p_p2p_node.add_argument("--key", required=True, help="Node identity private key path")
+    p_p2p_node.add_argument("--bootstrap", nargs="*", default=[], help="Bootstrap peer host:port list")
+
+    p_p2p_chat = p_p2p_sub.add_parser("chat", help="P2P Swarm Chat directly to a PeerID")
+    p_p2p_chat.add_argument("--key", required=True, help="Your identity private key path")
+    p_p2p_chat.add_argument("--target-peer", required=True, help="Target PeerID (pqc_...)")
+    p_p2p_chat.add_argument("--port", type=int, default=9101, help="Local listening port (default: 9101)")
+    p_p2p_chat.add_argument("--bootstrap", default=None, help="Bootstrap peer host:port to enter swarm")
+
+    # tor
+    p_tor = subparsers.add_parser("tor", help="Tor Onion Routing & Hidden Service utilities")
+    p_tor_sub = p_tor.add_subparsers(dest="tor_mode", required=True)
+
+    p_tor_status = p_tor_sub.add_parser("status", help="Probe local Tor SOCKS5 daemon")
+    p_tor_status.add_argument("--proxy", default="127.0.0.1:9050", help="Tor proxy address (default: 127.0.0.1:9050)")
+
+    p_tor_onion = p_tor_sub.add_parser("onion-gen", help="Generate Tor v3 Hidden Service configuration")
+    p_tor_onion.add_argument("--dir", default="/var/lib/tor/pq_ratchet_service/", help="HiddenService directory")
+    p_tor_onion.add_argument("--virtual-port", type=int, default=80, help="Public virtual port (default: 80)")
+    p_tor_onion.add_argument("--target-port", type=int, default=8000, help="Internal target port (default: 8000)")
 
     # benchmark
     subparsers.add_parser("benchmark", help="Run comprehensive cryptographic benchmark")
@@ -258,7 +432,11 @@ def main():
     elif args.subcommand == "pipe":
         if args.pipe_mode == "send":
             host, port_str = args.to.split(":")
-            asyncio.run(run_pipe_send(host, int(port_str), args.key, args.peer_pub))
+            t_proxy = None
+            if args.tor_proxy:
+                ph, pp = args.tor_proxy.split(":")
+                t_proxy = (ph, int(pp))
+            asyncio.run(run_pipe_send(host, int(port_str), args.key, args.peer_pub, via_tor=args.via_tor, tor_proxy=t_proxy))
         elif args.pipe_mode == "recv":
             host, port_str = args.listen.split(":")
             asyncio.run(run_pipe_recv(host, int(port_str), args.key, args.peer_pub))
@@ -293,9 +471,26 @@ def main():
             except KeyboardInterrupt:
                 loop.run_until_complete(client.stop())
 
+    elif args.subcommand == "p2p":
+        if args.p2p_mode == "node":
+            lhost, lport = args.listen.split(":")
+            asyncio.run(run_p2p_node(lhost, int(lport), args.key, args.bootstrap))
+        elif args.p2p_mode == "chat":
+            asyncio.run(run_p2p_chat(args.key, args.target_peer, args.port, args.bootstrap))
+
+    elif args.subcommand == "tor":
+        if args.tor_mode == "status":
+            asyncio.run(run_tor_status(args.proxy))
+        elif args.tor_mode == "onion-gen":
+            run_tor_onion_gen(args.dir, args.virtual_port, args.target_port)
+
     elif args.subcommand == "chat":
         host, port_str = args.addr.split(":")
-        asyncio.run(run_chat(args.mode, host, int(port_str), args.key, args.peer_pub))
+        t_proxy = None
+        if args.tor_proxy:
+            ph, pp = args.tor_proxy.split(":")
+            t_proxy = (ph, int(pp))
+        asyncio.run(run_chat(args.mode, host, int(port_str), args.key, args.peer_pub, via_tor=args.via_tor, tor_proxy=t_proxy))
 
     elif args.subcommand == "benchmark":
         from benchmarks.benchmark_ratchet import run_benchmarks

@@ -38,12 +38,25 @@ class AsyncPQStreamSession:
         port: int,
         local_identity: IdentityPrivateKey,
         remote_identity: Optional[IdentityPublicKey] = None,
+        via_tor: bool = False,
+        tor_proxy: Optional[tuple[str, int]] = None,
     ) -> "AsyncPQStreamSession":
         """
-        Establishes outbound TCP socket and executes initiator handshake.
+        Establishes outbound TCP socket (direct or onion-routed) and executes initiator handshake.
         Complexity: Handshake latency = 1.5 RTT.
         """
-        reader, writer = await asyncio.open_connection(host, port)
+        if via_tor or host.endswith(".onion") or tor_proxy is not None:
+            from pq_ratchet.transport.tor import AsyncTorConnector
+            p_host = tor_proxy[0] if tor_proxy else "127.0.0.1"
+            p_port = tor_proxy[1] if tor_proxy else None
+            reader, writer = await AsyncTorConnector.open_connection_via_tor(
+                dest_host=host,
+                dest_port=port,
+                proxy_host=p_host,
+                proxy_port=p_port,
+            )
+        else:
+            reader, writer = await asyncio.open_connection(host, port)
         try:
             # 1. Send Handshake Init
             session, init_bytes = PQRatchetSession.initiate_handshake(
