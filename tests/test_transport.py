@@ -95,12 +95,12 @@ class TestTransport(unittest.IsolatedAsyncioTestCase):
         server_task = asyncio.create_task(run_server())
         await server_started.wait()
 
-        # Client connects unpinned (no remote_identity provided)
+        # Client connects pinning Bob's identity, server accepts in TOFU mode
         client_session = await AsyncPQStreamSession.connect(
             host="127.0.0.1",
             port=19877,
             local_identity=alice_id,
-            remote_identity=None,
+            remote_identity=bob_id.public_key(),
         )
 
         await client_session.send_message(b"Hello TOFU")

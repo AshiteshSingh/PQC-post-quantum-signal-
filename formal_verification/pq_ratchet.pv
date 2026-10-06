@@ -4,7 +4,7 @@
   
   Evaluates:
   - Strong Secrecy of message payload under active quantum Dolev-Yao adversary.
-  - Mutual Authentication and injective agreement between Alice and Bob.
+  - Mutual Authentication and injective agreement between Alice and Bob with full transcript binding.
   - Forward Secrecy: Compromise of long-term ML-DSA-65 identity does not expose past sessions.
 *)
 
@@ -19,9 +19,14 @@ type kem_ct.
 type key.
 type nonce.
 
+(* Constants and Domain Separation *)
+const root_init: bitstring.
+const tag_asym: bitstring.
+const tag_msg: bitstring.
+
 (* Cryptographic Hash and KDF functions *)
 fun sha3_512(bitstring): bitstring.
-fun hkdf_extract(bitstring, bitstring): bitstring.
+fun hkdf_extract(bitstring, key): bitstring.
 fun hkdf_expand(bitstring, bitstring): key.
 
 (* Authenticated Encryption with Associated Data (AEAD) *)
@@ -63,18 +68,20 @@ let process_alice(skA: skey, pkB: pkey) =
   let pkA = dsa_pk(skA) in
   new ephem_skA: kem_sk;
   let ephem_pkA = kem_pk_gen(ephem_skA) in
-  let sigA = dsa_sign(skA, (ephem_pkA)) in
+  (* Full initiator transcript binding: pkA || pkB || ephem_pkA *)
+  let sigA = dsa_sign(skA, (pkA, pkB, ephem_pkA)) in
   event alice_started(pkA, pkB);
   out(c, (pkA, ephem_pkA, sigA));
   
   in(c, (=pkB, ctB: kem_ct, ephem_pkB: kem_pk, sigB: bitstring));
-  if dsa_verify(pkB, (ctB, ephem_pkB), sigB) = true then
+  (* Verify responder full transcript: pkA || pkB || ephem_pkA || ctB || ephem_pkB *)
+  if dsa_verify(pkB, (pkA, pkB, ephem_pkA, ctB, ephem_pkB), sigB) = true then
   let ss0 = kem_decap(ephem_skA, ctB) in
-  let root0 = hkdf_expand(hkdf_extract(root0, ss0), 0) in
+  let root0 = hkdf_extract(root_init, ss0) in
   new rA1: nonce;
   let ctA1 = kem_encap_ct(ephem_pkB, rA1) in
   let ss1 = kem_encap_ss(ephem_pkB, rA1) in
-  let k_send = hkdf_expand(hkdf_extract(root0, ss1), 1) in
+  let k_send = hkdf_expand(hkdf_extract(root0, ss1), tag_msg) in
   event alice_finished(pkA, pkB, k_send);
   new n: nonce;
   let ct_msg = aead_enc(k_send, n, secret_payload, (ctA1)) in
@@ -84,19 +91,21 @@ let process_alice(skA: skey, pkB: pkey) =
 let process_bob(skB: skey, pkA: pkey) =
   let pkB = dsa_pk(skB) in
   in(c, (=pkA, ephem_pkA: kem_pk, sigA: bitstring));
-  if dsa_verify(pkA, (ephem_pkA), sigA) = true then
+  (* Verify initiator full transcript: pkA || pkB || ephem_pkA *)
+  if dsa_verify(pkA, (pkA, pkB, ephem_pkA), sigA) = true then
   new rB0: nonce;
   let ctB0 = kem_encap_ct(ephem_pkA, rB0) in
   let ss0 = kem_encap_ss(ephem_pkA, rB0) in
   new ephem_skB: kem_sk;
   let ephem_pkB = kem_pk_gen(ephem_skB) in
-  let sigB = dsa_sign(skB, (ctB0, ephem_pkB)) in
+  (* Sign responder full transcript: pkA || pkB || ephem_pkA || ctB0 || ephem_pkB *)
+  let sigB = dsa_sign(skB, (pkA, pkB, ephem_pkA, ctB0, ephem_pkB)) in
   out(c, (pkB, ctB0, ephem_pkB, sigB));
-  let root0 = hkdf_expand(hkdf_extract(root0, ss0), 0) in
+  let root0 = hkdf_extract(root_init, ss0) in
   
   in(c, (ctA1: kem_ct, n: nonce, ct_msg: bitstring));
   let ss1 = kem_decap(ephem_skB, ctA1) in
-  let k_recv = hkdf_expand(hkdf_extract(root0, ss1), 1) in
+  let k_recv = hkdf_expand(hkdf_extract(root0, ss1), tag_msg) in
   let m = aead_dec(k_recv, n, ct_msg, (ctA1)) in
   event bob_accepted(pkA, pkB, k_recv);
   event bob_received_message(pkA, pkB, m).

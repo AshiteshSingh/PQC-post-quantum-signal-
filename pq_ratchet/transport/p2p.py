@@ -10,7 +10,7 @@ import json
 import struct
 import hashlib
 import time
-from typing import Dict, List, Tuple, Optional, Callable, Set
+from typing import Dict, List, Tuple, Optional, Callable, Set, Union
 from pq_ratchet.primitives.identity import (
     IdentityPrivateKey,
     IdentityPublicKey,
@@ -205,17 +205,62 @@ class PQP2PNode:
                 pass
         return dispatched
 
-    async def bootstrap(self, bootstrap_nodes: List[Tuple[str, int]]) -> int:
+    async def send_message_to_peer(
+        self,
+        target_peer_id: str,
+        message: bytes,
+        target_pk: Optional[IdentityPublicKey] = None,
+    ) -> bool:
+        """
+        Sends message to peer using the optimal route:
+        1. Direct stream if already connected.
+        2. Auto-connects via address discovered through PEX if target_pk is supplied.
+        3. Falls back to blind multi-hop gossip relaying across the mesh.
+        """
+        if target_peer_id in self._peers:
+            return await self.send_direct(target_peer_id, message)
+
+        if target_peer_id in self._known_addresses and target_pk is not None:
+            host, port = self._known_addresses[target_peer_id]
+            try:
+                await self.connect_peer(host, port, target_pk)
+                return await self.send_direct(target_peer_id, message)
+            except Exception:
+                pass
+
+        return await self.send_relayed(target_peer_id, message)
+
+    async def bootstrap(
+        self,
+        bootstrap_nodes: List[Union[Tuple[str, int, IdentityPublicKey], Tuple[str, int]]],
+    ) -> int:
         """
         Connects to one or more bootstrap peers and triggers swarm discovery.
+        Supports 3-tuples (host, port, expected_peer_pk) or 2-tuples (host, port) with trusted key lookup.
         Returns number of successfully established connections.
         """
         connected = 0
-        for host, port in bootstrap_nodes:
+        for node in bootstrap_nodes:
+            if len(node) == 3:
+                host, port, expected_pk = node
+            elif len(node) == 2:
+                host, port = node
+                expected_pk = None
+            else:
+                continue
+
             if host == self.listen_host and port == self.listen_port:
                 continue
+
+            # If expected_pk is not explicitly provided, search trusted_peers
+            if expected_pk is None and self.trusted_peers:
+                expected_pk = self.trusted_peers[0]
+
+            if expected_pk is None:
+                continue
+
             try:
-                await self.connect_peer(host, port)
+                await self.connect_peer(host, port, expected_pk)
                 connected += 1
             except Exception:
                 continue

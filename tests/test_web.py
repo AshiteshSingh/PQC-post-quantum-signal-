@@ -60,19 +60,17 @@ class TestEphemeralWebPQRatchet(unittest.TestCase):
                 self.assertEqual(hs_b["peer"], "Alice")
                 self.assertIn("ML-KEM-768", hs_a["suite"])
 
-                # Alice sends encrypted message
+                # Alice sends opaque E2EE packet via blind relay
                 ws_alice.send_text(json.dumps({
-                    "action": "send_message",
-                    "text": "Secret Ephemeral Quantum Payload",
+                    "action": "relay_packet",
+                    "target": "Bob",
+                    "packet": "T1BBUVVFX0NBQ0hFX1BBQ0tFVA==",
                 }))
 
-                msg_a = json.loads(ws_alice.receive_text())
                 msg_b = json.loads(ws_bob.receive_text())
-
-                self.assertEqual(msg_a["text"], "Secret Ephemeral Quantum Payload")
-                self.assertEqual(msg_b["text"], "Secret Ephemeral Quantum Payload")
-                self.assertEqual(msg_a["sender"], "Alice")
-                self.assertTrue(msg_a["pqc_meta"]["total_wire_bytes"] > 0)
+                self.assertEqual(msg_b["type"], "relayed_packet")
+                self.assertEqual(msg_b["from"], "Alice")
+                self.assertEqual(msg_b["packet"], "T1BBUVVFX0NBQ0hFX1BBQ0tFVA==")
 
                 # Bob clicks "Clear Chat for Both"
                 ws_bob.send_text(json.dumps({

@@ -2,7 +2,7 @@
 
 [![Security: Post-Quantum FIPS 203/204](https://img.shields.io/badge/Security-NIST_FIPS_203%2F204-blue.svg)](#)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-green.svg)](LICENSE)
-[![Formal Verification: ProVerif](https://img.shields.io/badge/Formal_Proof-ProVerif_2.0-purple.svg)](formal_verification/pq_ratchet.pv)
+[![Symbolic Security Model: ProVerif](https://img.shields.io/badge/Symbolic_Model-ProVerif_2.0-purple.svg)](formal_verification/pq_ratchet.pv)
 [![Quantum Security Margin: 192-bit](https://img.shields.io/badge/Security_Margin-192--bit_FTQC-red.svg)](#)
 
 A research-grade, zero-failure post-quantum end-to-end encrypted (E2EE) messaging protocol and network transport layer. Designed for cybersecurity teams, privacy engineers, and high-assurance distributed systems migrating beyond classical Diffie-Hellman and elliptic curves to neutralize **Harvest-Now-Decrypt-Later (HNDL)** adversaries.
@@ -20,7 +20,7 @@ The classical **Double Ratchet Algorithm** (pioneered by Signal and used across 
 - Classical DH is **bidirectional and non-interactive**: both parties compute the shared secret $g^{ab}$ from their static/ephemeral shares.
 - Modern lattice-based post-quantum standards (**FIPS 203 / ML-KEM**) are **unidirectional Key Encapsulation Mechanisms (KEMs)**: one party must encapsulate against a public key, generating an explicit ciphertext that the peer must decapsulate.
 
-**`pq-ratchet`** solves this structural asymmetry by implementing an **alternating KEM Double Ratchet engine** backed by a **Dual-PRF Combiner** (FIPS 203 ML-KEM-768 + RFC 7748 X25519) and long-term **FIPS 204 ML-DSA-65 identity signatures**, delivering mathematically provable $\text{IND-CCA2}$ confidentiality, continuous forward secrecy, and self-healing PCS.
+**`pq-ratchet`** solves this structural asymmetry by implementing an **alternating KEM Double Ratchet engine** backed by a **Dual-PRF Combiner** (FIPS 203 ML-KEM-768 + RFC 7748 X25519) and long-term **FIPS 204 ML-DSA-65 identity signatures**, delivering $\text{IND-CCA2}$ confidentiality, continuous forward secrecy, and self-healing PCS under concrete lattice and group-theoretic hardness assumptions.
 
 ---
 
@@ -275,12 +275,16 @@ bob_session.close()
 
 ---
 
-## 9. Security & Hardening Properties
+## 9. Security, Threat Modeling & Hardening Invariants
 
-- **Constant-Time Execution:** Modular arithmetic and group scalar multiplications are delegated to constant-time OpenSSL/Rust microarchitectural kernels.
-- **Strict Memory Zeroization:** All ephemeral root keys, symmetric chain keys, and skipped message keys implement in-place zeroization prior to memory release.
-- **Bounded Skipped Keys:** Out-of-order message buffering enforces strict LRU eviction (maximum 1,000 keys) to prevent memory-exhaustion Denial-of-Service attacks.
-- **Anti-Replay Protection:** Nonces are derived deterministically from $(epoch, seq)$ tuples bound to ChaCha20-Poly1305 Associated Data. Replayed frames trigger authentication failure.
+- **Constant-Time Execution:** Modular polynomial arithmetic and elliptic curve group scalar multiplications are delegated to constant-time OpenSSL/Rust microarchitectural kernels to neutralize timing side-channels.
+- **Full Handshake Transcript Binding:** Initiator and responder signatures under ML-DSA-65 authenticate the complete protocol transcript: protocol version, role identifiers, local/remote long-term identity public keys, ephemeral Hybrid KEM keys, and encapsulation ciphertexts. This prevents Unknown Key Share (UKS) and cross-session reflection attacks.
+- **DoS Sequence Gap Rejection:** Out-of-order packet sequence numbers are bounded by `MAX_RATCHET_SKIP_GAP = 1000`. Inbound frames exceeding this sequence gap are rejected in $\mathcal{O}(1)$ prior to performing any symmetric KDF steps or buffer allocations, eliminating CPU/memory exhaustion amplification.
+- **Best-Effort Memory Zeroization (Runtime-Bounded):** Ephemeral root keys, symmetric chain keys, and skipped message keys maintained in mutable `bytearray` buffers are explicitly overwritten in-place with zeros (`zeroize()`) upon ratcheting, eviction, or session destruction. However, because CPython's memory allocator, garbage collector, and CFFI bindings manage immutable `bytes` and opaque OpenSSL/Rust key structs outside direct Python memory control, absolute physical RAM zeroization cannot be guaranteed at the interpreter layer.
+- **Bounded Skipped Keys Cache:** Out-of-order message buffering enforces an LRU eviction policy capped at 1,000 keys to prevent memory exhaustion DoS.
+- **Anti-Replay Protection:** Nonces are derived deterministically from $(epoch, seq)$ tuples bound into ChaCha20-Poly1305 Associated Data. Replayed frames trigger immediate AEAD authentication failures.
+- **Browser Threat Model & Identity Trust:** In-browser messaging executes cryptographic primitives within the browser runtime (WebAssembly/JS), but inherently trusts the origin delivering the web assets. Peer public keys received from the relay server are marked as Unverified (Trust-On-First-Use) until the user explicitly compares Safety Numbers out-of-band and pins the identity in local storage, preventing server-assisted Man-in-the-Middle attacks.
+- **Formal Verification Scope:** The ProVerif model (`formal_verification/pq_ratchet.pv`) evaluates the symbolic core of the alternating KEM handshake and ratchet turn under a Dolev-Yao quantum adversary with standard cryptographic abstractions (perfect hashing, ideal KEM, unforgeable signatures), modeling confidentiality and injective agreement rather than serving as an end-to-end computational proof of the Python codebase.
 
 ---
 

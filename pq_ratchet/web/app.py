@@ -93,7 +93,7 @@ class UserSession:
         self.ws = ws
         self.created_at = time.time()
         self.expires_at = self.created_at + SESSION_TTL_SECONDS
-        self.identity: Optional[IdentityPrivateKey] = IdentityPrivateKey.generate()
+        self.identity: Optional[IdentityPrivateKey] = None
         self.identity_pk_b64: str = ""
         self.active_peer: Optional[str] = None
         self.ratchet_session: Optional[PQRatchetSession] = None
@@ -300,32 +300,10 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                 session.active_peer = target_username
                 target_sess.active_peer = clean_user
 
-                fp_a = session.identity.public_key().to_bytes()[:8].hex() if session.identity else "client"
-                fp_b = target_sess.identity.public_key().to_bytes()[:8].hex() if target_sess.identity else "client"
-
-                # Server-assisted handshake for fallback / automated integration testing
-                if session.identity is not None and target_sess.identity is not None:
-                    try:
-                        sess_a, init_pkt = PQRatchetSession.initiate_handshake(
-                            local_identity=session.identity,
-                            remote_identity=target_sess.identity.public_key(),
-                        )
-                        sess_b, resp_pkt = PQRatchetSession.respond_handshake(
-                            local_identity=target_sess.identity,
-                            init_packet_bytes=init_pkt,
-                            expected_remote_identity=session.identity.public_key(),
-                        )
-                        sess_a.complete_handshake(resp_pkt)
-                        session.ratchet_session = sess_a
-                        target_sess.ratchet_session = sess_b
-                    except Exception:
-                        pass
-
-                # Signal both endpoints with full handshake and peer identity public keys
+                # Relay signaling to both endpoints to initiate zero-trust client-side PQC handshake
                 hs_data_a = {
                     "type": "pqc_handshake_complete",
                     "peer": target_username,
-                    "peer_fingerprint": f"mldsa65:{fp_b}...",
                     "suite": "ML-KEM-768 + X25519 (Hybrid IND-CCA2) | ML-DSA-65 (EUF-CMA)",
                     "bits": 192,
                     "peer_identity_pk": target_sess.identity_pk_b64,
@@ -334,7 +312,6 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                 hs_data_b = {
                     "type": "pqc_handshake_complete",
                     "peer": clean_user,
-                    "peer_fingerprint": f"mldsa65:{fp_a}...",
                     "suite": "ML-KEM-768 + X25519 (Hybrid IND-CCA2) | ML-DSA-65 (EUF-CMA)",
                     "bits": 192,
                     "peer_identity_pk": session.identity_pk_b64,

@@ -23,7 +23,10 @@
         </div>
         <div class="user-status-row">
           <span class="user-status" id="display-peer-status">Offline</span>
-          <span class="peer-fingerprint hidden" id="peer-fingerprint" title="Verified ML-DSA-65 identity key"></span>
+          <span class="peer-fingerprint hidden" id="peer-fingerprint" title="Server-reported ML-DSA-65 identity key"></span>
+          <button type="button" class="verify-badge-btn hidden" id="btn-verify-identity" title="Click to verify peer safety number" style="background: none; border: 1px solid rgba(255,255,255,0.2); border-radius: 4px; padding: 2px 6px; cursor: pointer; font-size: 11px;">
+            <span id="verify-identity-badge">Unverified (TOFU)</span>
+          </button>
         </div>
       </div>
     </div>
@@ -152,6 +155,29 @@
           <span id="btn-join-text">Generate Keys & Continue</span>
         </button>
       </form>
+    </div>
+  </div>
+
+  <!-- Safety Number / Peer Verification Modal -->
+  <div class="modal-backdrop hidden" id="safety-modal">
+    <div class="modal-card">
+      <div class="modal-icon-shield">
+        <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#f59e0b" stroke-width="2">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+          <path d="M12 8v4m0 4h.01"></path>
+        </svg>
+      </div>
+      <h2>Verify Safety Number</h2>
+      <p class="modal-subtitle">
+        Compare this post-quantum safety number out-of-band with <strong id="verify-peer-name" style="color:#10b981;">peer</strong>. If this fingerprint matches what your peer sees on their screen, key substitution by a malicious or compromised relay server is mathematically eliminated.
+      </p>
+      <div class="safety-number-box" id="safety-number-display" style="font-family: monospace; font-size: 13px; background: rgba(0,0,0,0.4); padding: 12px; border-radius: 8px; word-break: break-all; margin: 16px 0; border: 1px solid rgba(255,255,255,0.1); color: #6ee7b7; text-align: center;">
+      </div>
+      <div id="safety-alert-box" class="hidden" style="color: #ef4444; font-weight: bold; margin-bottom: 12px; font-size: 13px;"></div>
+      <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px;">
+        <button type="button" class="nav-btn" id="btn-close-safety" style="padding: 8px 16px; border: 1px solid rgba(255,255,255,0.2); border-radius: 6px; cursor: pointer; background: transparent; color: #fff;">Close</button>
+        <button type="button" class="submit-btn" id="btn-mark-verified" style="padding: 8px 16px; background: #10b981; border: none; border-radius: 6px; cursor: pointer; color: #fff; font-weight: 600;">Trust & Mark Verified</button>
+      </div>
     </div>
   </div>
 

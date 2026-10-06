@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pq-ratchet"
+version = "0.1.0"
+description = "Production-grade Post-Quantum Signal Double Ratchet with ML-KEM-768 and ML-DSA-65"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "cryptography>=47.0.0",
+]
+
+[project.scripts]
+pq-ratchet = "pq_ratchet.cli:main"

@@ -3,12 +3,17 @@ pq_ratchet.core.ratchet
 Post-Quantum KEM Double Ratchet Engine (FIPS 203 ML-KEM-768 + FIPS 204 ML-DSA-65).
 """
 
+import struct
 from typing import Tuple, Optional
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from pq_ratchet.constants import (
+    PROTOCOL_VERSION,
     DOMAIN_ROOT_INIT,
     DOMAIN_ASYM_RATCHET,
     DOMAIN_AUTH_TRANSCRIPT,
+    DOMAIN_AUTH_INITIATOR,
+    DOMAIN_AUTH_RESPONDER,
+    MAX_SKIPPED_KEYS_CACHE,
     MAX_PACKET_PAYLOAD_BYTES,
 )
 from pq_ratchet.primitives.identity import (
@@ -33,6 +38,50 @@ from pq_ratchet.core.framing import (
 )
 
 
+def compute_initiator_transcript(
+    version: int,
+    initiator_id_pk: bytes,
+    responder_id_pk: bytes,
+    initiator_ephem_kem_pk: bytes,
+) -> bytes:
+    """
+    Computes unambiguous domain-separated initiator handshake authentication transcript.
+    T_init = DOMAIN_AUTH_INITIATOR || Version (1B) || 'INITIATOR' || pk_id_A || pk_id_B || pk_ephem_A.
+    """
+    return (
+        DOMAIN_AUTH_INITIATOR
+        + struct.pack("!B", version)
+        + b"INITIATOR"
+        + initiator_id_pk
+        + responder_id_pk
+        + initiator_ephem_kem_pk
+    )
+
+
+def compute_responder_transcript(
+    version: int,
+    initiator_id_pk: bytes,
+    responder_id_pk: bytes,
+    initiator_ephem_kem_pk: bytes,
+    kem_ct: bytes,
+    responder_ephem_kem_pk: bytes,
+) -> bytes:
+    """
+    Computes unambiguous domain-separated responder handshake authentication transcript.
+    T_resp = DOMAIN_AUTH_RESPONDER || Version (1B) || 'RESPONDER' || pk_id_A || pk_id_B || pk_ephem_A || ct_kem || pk_ephem_B.
+    """
+    return (
+        DOMAIN_AUTH_RESPONDER
+        + struct.pack("!B", version)
+        + b"RESPONDER"
+        + initiator_id_pk
+        + responder_id_pk
+        + initiator_ephem_kem_pk
+        + kem_ct
+        + responder_ephem_kem_pk
+    )
+
+
 class PQRatchetSession:
     """
     Stateful Post-Quantum E2EE Session.
@@ -54,17 +103,26 @@ class PQRatchetSession:
     ) -> Tuple["PQRatchetSession", bytes]:
         """
         Initiates outbound session (Alice -> Bob).
-        Signs ephemeral hybrid KEM PK under ML-DSA-65 to prevent MitM.
+        Binds full handshake transcript under ML-DSA-65 to guarantee EUF-CMA and prevent MitM / UKS.
         Complexity: O(N log N) signature + keygen.
         """
         ephem_sk = HybridKEMPrivateKey.generate()
         ephem_pk = ephem_sk.public_key()
         ephem_pk_bytes = ephem_pk.to_bytes()
 
-        sig = local_identity.sign_prekey(ephem_pk_bytes)
+        local_id_pk_bytes = local_identity.public_key().to_bytes()
+        remote_id_pk_bytes = remote_identity.to_bytes()
+
+        init_transcript = compute_initiator_transcript(
+            version=PROTOCOL_VERSION,
+            initiator_id_pk=local_id_pk_bytes,
+            responder_id_pk=remote_id_pk_bytes,
+            initiator_ephem_kem_pk=ephem_pk_bytes,
+        )
+        sig = local_identity.sign(init_transcript)
 
         init_packet = HandshakeInitPacket(
-            sender_identity_pk_bytes=local_identity.public_key().to_bytes(),
+            sender_identity_pk_bytes=local_id_pk_bytes,
             ephemeral_kem_pk_bytes=ephem_pk_bytes,
             signature=sig,
         )
@@ -89,7 +147,7 @@ class PQRatchetSession:
     ) -> Tuple["PQRatchetSession", bytes]:
         """
         Responds to inbound handshake (Bob <- Alice).
-        Verifies initiator ML-DSA-65 signature, encapsulates against initiator KEM PK.
+        Verifies initiator ML-DSA-65 signature on full transcript, encapsulates against initiator KEM PK.
         Derives root key and initial sending chain key.
         """
         init_pkt = HandshakeInitPacket.deserialize(init_packet_bytes)
@@ -98,10 +156,15 @@ class PQRatchetSession:
         if sender_id_pk.to_bytes() != expected_remote_identity.to_bytes():
             raise PermissionError("Initiator identity does not match expected peer public key")
 
-        # Verify ML-DSA-65 signature on initiator ephemeral key
-        expected_signed_payload = DOMAIN_AUTH_TRANSCRIPT + init_pkt.ephemeral_kem_pk_bytes
-        if not sender_id_pk.verify(init_pkt.signature, expected_signed_payload):
-            raise ValueError("Cryptographic verification failure: invalid initiator prekey signature")
+        # Verify ML-DSA-65 signature on full initiator transcript
+        expected_init_transcript = compute_initiator_transcript(
+            version=PROTOCOL_VERSION,
+            initiator_id_pk=sender_id_pk.to_bytes(),
+            responder_id_pk=local_identity.public_key().to_bytes(),
+            initiator_ephem_kem_pk=init_pkt.ephemeral_kem_pk_bytes,
+        )
+        if not sender_id_pk.verify(init_pkt.signature, expected_init_transcript):
+            raise ValueError("Cryptographic verification failure: invalid initiator handshake transcript signature")
 
         alice_ephem_pk = HybridKEMPublicKey.from_bytes(init_pkt.ephemeral_kem_pk_bytes)
 
@@ -113,8 +176,15 @@ class PQRatchetSession:
         bob_ephem_pk = bob_ephem_sk.public_key()
         bob_ephem_pk_bytes = bob_ephem_pk.to_bytes()
 
-        # Sign response transcript: (Ciphertext || Bob Ephem PK)
-        resp_transcript = DOMAIN_AUTH_TRANSCRIPT + kem_ct.to_bytes() + bob_ephem_pk_bytes
+        # Sign full response transcript: (Version || Responder || Alice ID || Bob ID || Alice Ephem || CT || Bob Ephem)
+        resp_transcript = compute_responder_transcript(
+            version=PROTOCOL_VERSION,
+            initiator_id_pk=sender_id_pk.to_bytes(),
+            responder_id_pk=local_identity.public_key().to_bytes(),
+            initiator_ephem_kem_pk=init_pkt.ephemeral_kem_pk_bytes,
+            kem_ct=kem_ct.to_bytes(),
+            responder_ephem_kem_pk=bob_ephem_pk_bytes,
+        )
         resp_sig = local_identity.sign(resp_transcript)
 
         # Derive initial root and sending chain key
@@ -147,7 +217,7 @@ class PQRatchetSession:
     def complete_handshake(self, resp_packet_bytes: bytes) -> None:
         """
         Completes initiator handshake (Alice receives Bob's response).
-        Decapsulates Bob's ciphertext, authenticates Bob's signature, sets up initial root.
+        Decapsulates Bob's ciphertext, authenticates Bob's signature on full transcript, sets up initial root.
         """
         if not self.state.is_initiator or self.state.local_ephem_sk is None:
             raise RuntimeError("Session state is not in a pending initiator handshake")
@@ -161,10 +231,17 @@ class PQRatchetSession:
         else:
             self.state.remote_identity = resp_id_pk
 
-        # Verify ML-DSA-65 signature on responder transcript
-        resp_transcript = DOMAIN_AUTH_TRANSCRIPT + resp_pkt.kem_ct_bytes + resp_pkt.ephemeral_kem_pk_bytes
-        if not resp_id_pk.verify(resp_pkt.signature, resp_transcript):
-            raise ValueError("Cryptographic verification failure: invalid responder signature")
+        # Verify ML-DSA-65 signature on full responder transcript
+        expected_resp_transcript = compute_responder_transcript(
+            version=PROTOCOL_VERSION,
+            initiator_id_pk=self.state.local_identity.public_key().to_bytes(),
+            responder_id_pk=resp_id_pk.to_bytes(),
+            initiator_ephem_kem_pk=self.state.local_ephem_sk.public_key().to_bytes(),
+            kem_ct=resp_pkt.kem_ct_bytes,
+            responder_ephem_kem_pk=resp_pkt.ephemeral_kem_pk_bytes,
+        )
+        if not resp_id_pk.verify(resp_pkt.signature, expected_resp_transcript):
+            raise ValueError("Cryptographic verification failure: invalid responder handshake transcript signature")
 
         # Decapsulate shared secret
         kem_ct = HybridKEMCiphertext.from_bytes(resp_pkt.kem_ct_bytes)
@@ -340,6 +417,17 @@ class PQRatchetSession:
         if draft_recv_chain is None:
             raise RuntimeError("Receiving chain key not available for decryption")
 
+        # Invariant: Reject sequence regression or excessive skip gaps prior to computing any key derivation steps.
+        # Neutralizes remote CPU/memory exhaustion DoS via unauthenticated large sequence headers.
+        if packet.seq < draft_recv_seq:
+            raise ValueError(f"Packet sequence number {packet.seq} is behind receiving sequence {draft_recv_seq}")
+
+        skip_gap = packet.seq - draft_recv_seq
+        if skip_gap > MAX_SKIPPED_KEYS_CACHE:
+            raise ValueError(
+                f"Packet sequence gap {skip_gap} exceeds maximum permissible skip limit ({MAX_SKIPPED_KEYS_CACHE})"
+            )
+
         # Fast-forward chain if out-of-order packet (seq > receiving_seq)
         skipped_keys = []
         while draft_recv_seq < packet.seq:
@@ -361,14 +449,16 @@ class PQRatchetSession:
             zeroize(bytearray(message_key))
             raise ValueError("Cryptographic verification failure: invalid AEAD tag")
 
-        # Decryption succeeded. Commit state safely.
-        if self.state.receiving_chain_key is not None:
+        # Decryption succeeded. Commit state safely with explicit memory zeroization.
+        if draft_root_key is not self.state.root_key:
+            zeroize(self.state.root_key)
+        if self.state.receiving_chain_key is not None and draft_recv_chain is not self.state.receiving_chain_key:
             zeroize(self.state.receiving_chain_key)
         if self.state.sending_chain_key is not None and draft_send_chain is not self.state.sending_chain_key:
             zeroize(self.state.sending_chain_key)
         if self.state.local_ephem_sk is not None and draft_local_ephem_sk is not self.state.local_ephem_sk:
-            # The old SK is implicitly discarded / no longer referenced
-            pass
+            # Ephemeral private key replaced; dereference to allow runtime garbage collection
+            self.state.local_ephem_sk = None
 
         self.state.root_key = draft_root_key
         self.state.receiving_chain_key = draft_recv_chain

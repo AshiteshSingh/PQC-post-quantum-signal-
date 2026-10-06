@@ -269,10 +269,22 @@ async def run_p2p_chat(key_path: str, peer_pub_path: str, target_peer_id: str, l
     node.on_message_received = on_p2p_msg
 
     if bootstrap:
-        bh, bp = bootstrap.split(":")
-        print(f"[*] Connecting to bootstrap node {bootstrap}...")
+        b_parts = bootstrap.split(":")
+        if len(b_parts) == 3:
+            bh, bp, b_key_path = b_parts
+            with open(b_key_path, "rb") as f:
+                b_raw = f.read()
+            b_pk = IdentityPublicKey.from_bytes(b_raw)
+        elif len(b_parts) == 2:
+            bh, bp = b_parts
+            b_pk = pk
+        else:
+            print(f"[-] Invalid bootstrap format: {bootstrap}. Expected host:port or host:port:key_path")
+            return
+
+        print(f"[*] Connecting to bootstrap node {bh}:{bp}...")
         try:
-            await node.connect_peer(bh, int(bp), pk)
+            await node.connect_peer(bh, int(bp), b_pk)
             print(f"[+] Connected to swarm mesh via {bootstrap}.")
         except Exception as e:
             print(f"[-] Warning: bootstrap connect failed: {e}")
@@ -285,9 +297,9 @@ async def run_p2p_chat(key_path: str, peer_pub_path: str, target_peer_id: str, l
                 break
             txt = line.strip()
             if txt:
-                sent = await node.send_direct(target_peer_id, txt.encode("utf-8"))
+                sent = await node.send_message_to_peer(target_peer_id, txt.encode("utf-8"), target_pk=pk)
                 if not sent:
-                    print(f"[-] Target peer not currently reachable. Direct connection required for E2EE.")
+                    print(f"[-] Target peer not currently reachable via direct connection or swarm relay.")
             print("\033[94m[You]\033[0m ", end="", flush=True)
 
     print("\033[94m[You]\033[0m ", end="", flush=True)

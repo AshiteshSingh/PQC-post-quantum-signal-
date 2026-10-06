@@ -88,10 +88,12 @@ class AsyncPQStreamSession:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
         local_identity: IdentityPrivateKey,
-        allowed_remote_identities: list[IdentityPublicKey],
+        allowed_remote_identities: Optional[list[IdentityPublicKey]] = None,
+        expected_remote_identity: Optional[IdentityPublicKey] = None,
     ) -> "AsyncPQStreamSession":
         """
         Handles inbound socket connection and executes responder handshake.
+        Enforces peer identity authentication against pinned key or whitelist.
         """
         # 1. Read Handshake Init
         init_len_buf = await reader.readexactly(4)
@@ -103,8 +105,16 @@ class AsyncPQStreamSession:
         init_pkt = HandshakeInitPacket.deserialize(init_bytes)
         sender_id_pk = IdentityPublicKey.from_bytes(init_pkt.sender_identity_pk_bytes)
         sender_bytes = sender_id_pk.to_bytes()
-        if not any(sender_bytes == pk.to_bytes() for pk in allowed_remote_identities):
-            raise PermissionError("Inbound connection from untrusted peer identity")
+
+        allowed_list = []
+        if expected_remote_identity is not None:
+            allowed_list.append(expected_remote_identity)
+        if allowed_remote_identities is not None:
+            allowed_list.extend(allowed_remote_identities)
+
+        if allowed_list:
+            if not any(sender_bytes == pk.to_bytes() for pk in allowed_list):
+                raise PermissionError("Inbound connection from untrusted peer identity")
 
         # 2. Respond Handshake
         session, resp_bytes = PQRatchetSession.respond_handshake(

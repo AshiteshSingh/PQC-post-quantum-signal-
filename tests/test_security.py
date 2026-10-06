@@ -105,6 +105,74 @@ class TestSecurityGuarantees(unittest.TestCase):
         alice_session.close()
         bob_session.close()
 
+    def test_dos_large_sequence_gap_rejected(self):
+        """
+        Verify that a frame with an excessively large sequence number gap (>1000)
+        is rejected in O(1) before any symmetric chain derivation or key caching occurs.
+        """
+        alice_session, init_pkt = PQRatchetSession.initiate_handshake(
+            local_identity=self.alice_id,
+            remote_identity=self.bob_id.public_key(),
+        )
+        bob_session, resp_pkt = PQRatchetSession.respond_handshake(
+            local_identity=self.bob_id,
+            init_packet_bytes=init_pkt,
+            expected_remote_identity=self.alice_id.public_key(),
+        )
+        alice_session.complete_handshake(resp_pkt)
+
+        # Alice crafts a valid packet, but an adversary tampers seq to 500,000
+        valid_packet_bytes = alice_session.ratchet_encrypt(b"Normal message")
+        pkt = RatchetDataPacket.deserialize(valid_packet_bytes)
+
+        # Forged packet with huge seq gap
+        forged_pkt = RatchetDataPacket(
+            epoch=pkt.epoch,
+            seq=500_000,
+            ciphertext=pkt.ciphertext,
+            kem_ct=pkt.kem_ct,
+            next_kem_pk=pkt.next_kem_pk,
+        )
+        forged_bytes = forged_pkt.serialize()
+
+        initial_skipped_count = len(bob_session.state.skipped_keys)
+        initial_recv_seq = bob_session.state.receiving_seq
+
+        with self.assertRaises(ValueError) as ctx:
+            bob_session.ratchet_decrypt(forged_bytes)
+
+        self.assertIn("exceeds maximum permissible skip limit", str(ctx.exception))
+        # Ensure state was not modified or burdened
+        self.assertEqual(len(bob_session.state.skipped_keys), initial_skipped_count)
+        self.assertEqual(bob_session.state.receiving_seq, initial_recv_seq)
+
+        alice_session.close()
+        bob_session.close()
+
+    def test_handshake_transcript_identity_binding(self):
+        """
+        Verify that an initiator handshake intended for Bob cannot be accepted by Charlie,
+        guaranteeing UKS (Unknown Key Share) resilience.
+        """
+        charlie_id = IdentityPrivateKey.generate()
+
+        # Alice initiates handshake intended for Bob
+        alice_session, init_pkt = PQRatchetSession.initiate_handshake(
+            local_identity=self.alice_id,
+            remote_identity=self.bob_id.public_key(),
+        )
+
+        # Charlie attempts to accept it claiming Alice initiated with Charlie
+        with self.assertRaises(ValueError) as ctx:
+            PQRatchetSession.respond_handshake(
+                local_identity=charlie_id,
+                init_packet_bytes=init_pkt,
+                expected_remote_identity=self.alice_id.public_key(),
+            )
+        self.assertIn("invalid initiator handshake transcript signature", str(ctx.exception))
+
+        alice_session.close()
+
 
 if __name__ == "__main__":
     unittest.main()

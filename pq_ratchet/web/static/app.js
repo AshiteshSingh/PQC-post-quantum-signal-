@@ -68,6 +68,15 @@
   const btnSendMessage = document.getElementById("btn-send-message");
   const toastStack = document.getElementById("toast-stack");
 
+  const btnVerifyIdentity = document.getElementById("btn-verify-identity");
+  const verifyIdentityBadge = document.getElementById("verify-identity-badge");
+  const safetyModal = document.getElementById("safety-modal");
+  const safetyNumberDisplay = document.getElementById("safety-number-display");
+  const verifyPeerName = document.getElementById("verify-peer-name");
+  const btnCloseSafety = document.getElementById("btn-close-safety");
+  const btnMarkVerified = document.getElementById("btn-mark-verified");
+  const safetyAlertBox = document.getElementById("safety-alert-box");
+
   // Step 1: Join Session & Generate Ephemeral Post-Quantum Identity
   joinForm.addEventListener("submit", function (e) {
     e.preventDefault();
@@ -182,8 +191,7 @@
 
     displayPeerName.textContent = activePeer;
     displayPeerStatus.textContent = "Performing PQC Handshake...";
-    peerFingerprint.textContent = activePeerIdentityPK.fingerprint();
-    peerFingerprint.classList.remove("hidden");
+    updatePeerIdentityTrustUI();
     headerAvatar.textContent = activePeer.charAt(0).toUpperCase();
 
     if (isInitiator) {
@@ -297,13 +305,22 @@
     chatInput.placeholder = "Type an E2EE encrypted message (double ratchet)...";
     chatInput.focus();
 
+    updatePeerIdentityTrustUI();
+
+    const pinnedFp = localStorage.getItem("pqc_pinned_fp_" + activePeer);
+    const fp = activePeerIdentityPK ? activePeerIdentityPK.fingerprint() : "";
+    const isVerified = pinnedFp === fp;
+
     // Render Handshake Verification Card in Message Stream
     const notice = document.createElement("div");
     notice.className = "system-notice";
     notice.innerHTML = `
-      <strong>Post-Quantum Channel Established (Zero-Trust E2EE)</strong><br>
+      <strong>Post-Quantum Channel Established (Zero-Trust Blind Relay)</strong><br>
       Hybrid KEM: ML-KEM-768 + X25519 | Signature: ML-DSA-65 | Cipher: ChaCha20-Poly1305<br>
-      Verified Peer Fingerprint: <code>${activePeerIdentityPK ? activePeerIdentityPK.fingerprint() : ''}</code>
+      Server-Reported Fingerprint: <code>${fp}</code><br>
+      <span style="color: ${isVerified ? '#10b981' : '#f59e0b'}; font-weight: 600;">
+        ${isVerified ? '✓ Identity Verified (Pinned)' : '⚠ Identity Unverified (TOFU) — Click badge or fingerprint to compare Safety Numbers out-of-band to prevent relay server MitM'}
+      </span>
     `;
     messagesList.appendChild(notice);
     scrollToBottom();
@@ -527,6 +544,7 @@
     headerAvatar.textContent = "?";
     pqcPill.classList.add("hidden");
     peerFingerprint.classList.add("hidden");
+    if (btnVerifyIdentity) btnVerifyIdentity.classList.add("hidden");
     btnClearChat.classList.add("hidden");
     chatInput.disabled = true;
     btnSendMessage.disabled = true;
@@ -543,6 +561,87 @@
     notice.textContent = "Peer disconnected — cryptographic session zeroized";
     messagesList.appendChild(notice);
     scrollToBottom();
+  }
+
+  function formatFingerprintChunks(hexStr) {
+    if (!hexStr) return "";
+    return hexStr.match(/.{1,4}/g)?.join("  ") || hexStr;
+  }
+
+  function updatePeerIdentityTrustUI() {
+    if (!activePeer || !activePeerIdentityPK) return;
+    const fp = activePeerIdentityPK.fingerprint();
+    peerFingerprint.textContent = fp;
+    peerFingerprint.classList.remove("hidden");
+
+    if (btnVerifyIdentity) btnVerifyIdentity.classList.remove("hidden");
+
+    const pinnedFp = localStorage.getItem("pqc_pinned_fp_" + activePeer);
+    if (pinnedFp) {
+      if (pinnedFp === fp) {
+        if (verifyIdentityBadge) {
+          verifyIdentityBadge.textContent = "✓ Verified (Pinned)";
+          verifyIdentityBadge.style.color = "#10b981";
+        }
+      } else {
+        if (verifyIdentityBadge) {
+          verifyIdentityBadge.textContent = "⚠ KEY MISMATCH (MitM Alert)";
+          verifyIdentityBadge.style.color = "#ef4444";
+        }
+        showToast("CRITICAL WARNING: Peer identity key has changed! Relay server may be intercepting!", true);
+      }
+    } else {
+      if (verifyIdentityBadge) {
+        verifyIdentityBadge.textContent = "⚠ Unverified (TOFU)";
+        verifyIdentityBadge.style.color = "#f59e0b";
+      }
+    }
+  }
+
+  function openSafetyModal() {
+    if (!activePeer || !activePeerIdentityPK) return;
+    const peerFp = activePeerIdentityPK.fingerprint();
+    const myFp = localIdentity ? localIdentity.publicKey().fingerprint() : "";
+    const pinnedFp = localStorage.getItem("pqc_pinned_fp_" + activePeer);
+
+    if (verifyPeerName) verifyPeerName.textContent = activePeer;
+    if (safetyNumberDisplay) {
+      safetyNumberDisplay.innerHTML = `
+        <div style="margin-bottom: 8px;"><strong>Your Fingerprint:</strong><br>${formatFingerprintChunks(myFp)}</div>
+        <div><strong>${activePeer}'s Server-Reported Fingerprint:</strong><br>${formatFingerprintChunks(peerFp)}</div>
+      `;
+    }
+
+    if (pinnedFp && pinnedFp !== peerFp) {
+      if (safetyAlertBox) {
+        safetyAlertBox.classList.remove("hidden");
+        safetyAlertBox.textContent = `CRITICAL WARNING: Fingerprint mismatch! Previously pinned: ${pinnedFp}, Current: ${peerFp}.`;
+      }
+    } else {
+      if (safetyAlertBox) safetyAlertBox.classList.add("hidden");
+    }
+
+    if (safetyModal) safetyModal.classList.remove("hidden");
+  }
+
+  if (btnVerifyIdentity) {
+    btnVerifyIdentity.addEventListener("click", openSafetyModal);
+  }
+  if (peerFingerprint) {
+    peerFingerprint.style.cursor = "pointer";
+    peerFingerprint.addEventListener("click", openSafetyModal);
+  }
+  if (btnCloseSafety) {
+    btnCloseSafety.addEventListener("click", () => safetyModal && safetyModal.classList.add("hidden"));
+  }
+  if (btnMarkVerified) {
+    btnMarkVerified.addEventListener("click", () => {
+      if (!activePeer || !activePeerIdentityPK) return;
+      localStorage.setItem("pqc_pinned_fp_" + activePeer, activePeerIdentityPK.fingerprint());
+      updatePeerIdentityTrustUI();
+      if (safetyModal) safetyModal.classList.add("hidden");
+      showToast(`Identity for ${activePeer} verified and pinned locally.`);
+    });
   }
 
   function scrollToBottom() {
