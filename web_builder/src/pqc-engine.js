@@ -645,6 +645,40 @@ export class PQRatchetSession {
     return [session, respPacket.serialize()];
   }
 
+  validateHandshakeResponse(respPacketBytes) {
+    if (!this.isInitiator || !this.localEphemSK) {
+      return false;
+    }
+    try {
+      const respPkt = HandshakeRespPacket.deserialize(respPacketBytes);
+      const respIdPK = IdentityPublicKey.fromBytes(respPkt.responder_identity_pk_bytes);
+
+      if (this.remoteIdentity) {
+        if (!constantTimeCompare(respIdPK.toBytes(), this.remoteIdentity.toBytes())) {
+          return false;
+        }
+      }
+
+      const expectedRespTranscript = computeResponderTranscript(
+        PROTOCOL_VERSION,
+        this.localIdentity.publicKey().toBytes(),
+        respIdPK.toBytes(),
+        this.localEphemSK.publicKey().toBytes(),
+        respPkt.kem_ct_bytes,
+        respPkt.ephemeral_kem_pk_bytes
+      );
+      if (!respIdPK.verify(respPkt.signature, expectedRespTranscript)) {
+        return false;
+      }
+
+      HybridKEMCiphertext.fromBytes(respPkt.kem_ct_bytes);
+      HybridKEMPublicKey.fromBytes(respPkt.ephemeral_kem_pk_bytes);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
   completeHandshake(respPacketBytes) {
     if (!this.isInitiator || !this.localEphemSK) {
       throw new Error("Session state is not in a pending initiator handshake");
@@ -657,8 +691,6 @@ export class PQRatchetSession {
       if (!constantTimeCompare(respIdPK.toBytes(), this.remoteIdentity.toBytes())) {
         throw new Error("Responder identity does not match expected peer public key");
       }
-    } else {
-      this.remoteIdentity = respIdPK;
     }
 
     const expectedRespTranscript = computeResponderTranscript(
@@ -671,6 +703,10 @@ export class PQRatchetSession {
     );
     if (!respIdPK.verify(respPkt.signature, expectedRespTranscript)) {
       throw new Error("Cryptographic verification failure: invalid responder signature");
+    }
+
+    if (!this.remoteIdentity) {
+      this.remoteIdentity = respIdPK;
     }
 
     const kemCt = HybridKEMCiphertext.fromBytes(respPkt.kem_ct_bytes);

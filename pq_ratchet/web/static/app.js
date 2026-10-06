@@ -253,6 +253,10 @@
     // Message Type 0x02: HandshakeRespPacket (Alice receives from Bob)
     else if (msgType === 0x02) { // MSG_TYPE_HANDSHAKE_RESP
       if (!ratchetSession || !isInitiator) return;
+      if (!ratchetSession.validateHandshakeResponse(packetBytes)) {
+        showToast("Dropped forged or unauthenticated handshake response frame", true);
+        return;
+      }
       try {
         ratchetSession.completeHandshake(packetBytes);
         onHandshakeEstablished();

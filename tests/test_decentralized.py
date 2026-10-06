@@ -18,6 +18,7 @@ from pq_ratchet.transport.p2p import (
     derive_peer_id,
 )
 from pq_ratchet.core.ratchet import PQRatchetSession
+from pq_ratchet.core.framing import HandshakeRespPacket
 
 
 class TestDecentralizedTransport(unittest.IsolatedAsyncioTestCase):
@@ -240,6 +241,86 @@ class TestDecentralizedTransport(unittest.IsolatedAsyncioTestCase):
             await node_a.stop()
             await node_b.stop()
             await node_c.stop()
+
+    async def test_forged_handshake_response_does_not_abort_pending_handshake(self):
+        """
+        Validates resilience against adversarial handshake response injection attacks.
+        Scenario:
+        1. Node A initiates an E2EE handshake targeting Node B, creating a pending init entry.
+        2. Adversary injects malformed/forged HandshakeRespPacket frames before Bob's response arrives.
+        3. Invariant: Node A pre-validates responses, drops forged frames, and retains the pending entry.
+        4. When Node B's authentic HandshakeRespPacket arrives, Node A completes the handshake and establishes E2EE.
+        """
+        node_a_sk = IdentityPrivateKey.generate()
+        node_b_sk = IdentityPrivateKey.generate()
+        node_attacker_sk = IdentityPrivateKey.generate()
+
+        node_a = PQP2PNode(local_identity=node_a_sk, trusted_peers=[node_b_sk.public_key()], listen_host="127.0.0.1", listen_port=19221)
+        node_b = PQP2PNode(local_identity=node_b_sk, trusted_peers=[node_a_sk.public_key()], listen_host="127.0.0.1", listen_port=19222)
+
+        # Alice initiates handshake to Bob
+        alice_candidate, init_bytes = PQRatchetSession.initiate_handshake(
+            local_identity=node_a_sk,
+            remote_identity=node_b_sk.public_key(),
+        )
+        hs_event = asyncio.Event()
+        node_a._pending_e2ee_inits[node_b.peer_id] = (alice_candidate, hs_event)
+
+        # 1. Adversary injects garbage payload under TYPE_E2EE_HANDSHAKE_RESP
+        await node_a._process_destination_packet(
+            origin=node_b.peer_id,
+            msg_type=P2PMessageEnvelope.TYPE_E2EE_HANDSHAKE_RESP,
+            raw_payload=b"garbage_forged_bytes_1234567890",
+        )
+
+        # Assert: Pending initialization is NOT evicted, hs_event is NOT prematurely signaled
+        self.assertIn(node_b.peer_id, node_a._pending_e2ee_inits)
+        self.assertFalse(hs_event.is_set())
+
+        # 2. Adversary injects a validly structured HandshakeRespPacket signed by an attacker identity
+        attacker_sig = node_attacker_sk.sign(b"forged transcript payload")
+        forged_pkt = HandshakeRespPacket(
+            responder_identity_pk_bytes=node_attacker_sk.public_key().to_bytes(),
+            kem_ct_bytes=bytes(1184),
+            ephemeral_kem_pk_bytes=bytes(1216),
+            signature=attacker_sig,
+        )
+        forged_resp_bytes = forged_pkt.serialize()
+        await node_a._process_destination_packet(
+            origin=node_b.peer_id,
+            msg_type=P2PMessageEnvelope.TYPE_E2EE_HANDSHAKE_RESP,
+            raw_payload=forged_resp_bytes,
+        )
+
+        # Assert: Pending initialization is STILL intact despite well-formed attacker packet
+        self.assertIn(node_b.peer_id, node_a._pending_e2ee_inits)
+        self.assertFalse(hs_event.is_set())
+
+        # 3. Authentic Bob produces genuine HandshakeRespPacket
+        bob_real_session, real_resp_bytes = PQRatchetSession.respond_handshake(
+            local_identity=node_b_sk,
+            init_packet_bytes=init_bytes,
+            expected_remote_identity=node_a_sk.public_key(),
+        )
+
+        # Alice processes the genuine response
+        await node_a._process_destination_packet(
+            origin=node_b.peer_id,
+            msg_type=P2PMessageEnvelope.TYPE_E2EE_HANDSHAKE_RESP,
+            raw_payload=real_resp_bytes,
+        )
+
+        # Assert: Handshake completed successfully
+        self.assertNotIn(node_b.peer_id, node_a._pending_e2ee_inits)
+        self.assertTrue(hs_event.is_set())
+        self.assertIn(node_b.peer_id, node_a._e2ee_sessions)
+
+        # Invariant: Channel is operational and passes ratcheted data
+        alice_session = node_a._e2ee_sessions[node_b.peer_id]
+        test_msg = b"Authenticated after forged response drop"
+        ciphertext = alice_session.ratchet_encrypt(test_msg)
+        decrypted = bob_real_session.ratchet_decrypt(ciphertext)
+        self.assertEqual(decrypted, test_msg)
 
 
 if __name__ == "__main__":

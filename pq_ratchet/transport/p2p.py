@@ -680,19 +680,33 @@ class PQP2PNode:
             return
 
         if msg_type == P2PMessageEnvelope.TYPE_E2EE_HANDSHAKE_RESP:
-            pending = self._pending_e2ee_inits.pop(origin, None)
-            if pending is not None:
-                candidate_session, hs_event = pending
-                try:
-                    candidate_session.complete_handshake(raw_payload)
-                    if origin in self._e2ee_sessions:
-                        self._e2ee_sessions[origin].close()
-                    if origin in self._staged_e2ee_sessions:
-                        self._staged_e2ee_sessions.pop(origin).close()
-                    self._e2ee_sessions[origin] = candidate_session
-                    hs_event.set()
-                except Exception:
-                    candidate_session.close()
+            pending = self._pending_e2ee_inits.get(origin)
+            if pending is None:
+                return
+
+            candidate_session, hs_event = pending
+
+            # Cryptographic Pre-Validation Guard:
+            # Validate response authenticity and structural integrity BEFORE popping pending entry.
+            # An adversarial relay injecting malformed or forged responses must be silently dropped,
+            # keeping candidate session and pending initialization intact for authentic response arrival.
+            if not candidate_session.validate_handshake_response(raw_payload):
+                return
+
+            # Cryptographic authenticity verified: Evict pending init and complete handshake
+            self._pending_e2ee_inits.pop(origin, None)
+            try:
+                candidate_session.complete_handshake(raw_payload)
+                if origin in self._e2ee_sessions:
+                    self._e2ee_sessions[origin].close()
+                if origin in self._staged_e2ee_sessions:
+                    self._staged_e2ee_sessions.pop(origin).close()
+                self._e2ee_sessions[origin] = candidate_session
+                hs_event.set()
+            except Exception:
+                candidate_session.close()
+                # Unblock waiting sender to prevent timeout if unforeseen exception occurs
+                hs_event.set()
             return
 
         if msg_type == P2PMessageEnvelope.TYPE_E2EE_RATCHET_DATA:

@@ -214,6 +214,42 @@ class PQRatchetSession:
         session = cls(state)
         return session, resp_packet.serialize()
 
+    def validate_handshake_response(self, resp_packet_bytes: bytes) -> bool:
+        """
+        Validates cryptographic authenticity and structural integrity of a HandshakeRespPacket
+        WITHOUT mutating session state or consuming ephemeral keys.
+        Returns True if authentic and valid; False on any cryptographic, framing, or identity mismatch.
+        Complexity: O(N log N) signature verification + O(1) KEM framing validation.
+        """
+        if not self.state.is_initiator or self.state.local_ephem_sk is None:
+            return False
+
+        try:
+            resp_pkt = HandshakeRespPacket.deserialize(resp_packet_bytes)
+            resp_id_pk = IdentityPublicKey.from_bytes(resp_pkt.responder_identity_pk_bytes)
+
+            if self.state.remote_identity is not None:
+                if resp_id_pk.to_bytes() != self.state.remote_identity.to_bytes():
+                    return False
+
+            expected_resp_transcript = compute_responder_transcript(
+                version=PROTOCOL_VERSION,
+                initiator_id_pk=self.state.local_identity.public_key().to_bytes(),
+                responder_id_pk=resp_id_pk.to_bytes(),
+                initiator_ephem_kem_pk=self.state.local_ephem_sk.public_key().to_bytes(),
+                kem_ct=resp_pkt.kem_ct_bytes,
+                responder_ephem_kem_pk=resp_pkt.ephemeral_kem_pk_bytes,
+            )
+            if not resp_id_pk.verify(resp_pkt.signature, expected_resp_transcript):
+                return False
+
+            kem_ct = HybridKEMCiphertext.from_bytes(resp_pkt.kem_ct_bytes)
+            HybridKEMPublicKey.from_bytes(resp_pkt.ephemeral_kem_pk_bytes)
+            self.state.local_ephem_sk.decapsulate(kem_ct)
+            return True
+        except Exception:
+            return False
+
     def complete_handshake(self, resp_packet_bytes: bytes) -> None:
         """
         Completes initiator handshake (Alice receives Bob's response).
@@ -228,8 +264,6 @@ class PQRatchetSession:
         if self.state.remote_identity is not None:
             if resp_id_pk.to_bytes() != self.state.remote_identity.to_bytes():
                 raise PermissionError("Responder identity does not match expected peer public key")
-        else:
-            self.state.remote_identity = resp_id_pk
 
         # Verify ML-DSA-65 signature on full responder transcript
         expected_resp_transcript = compute_responder_transcript(
@@ -242,6 +276,9 @@ class PQRatchetSession:
         )
         if not resp_id_pk.verify(resp_pkt.signature, expected_resp_transcript):
             raise ValueError("Cryptographic verification failure: invalid responder handshake transcript signature")
+
+        if self.state.remote_identity is None:
+            self.state.remote_identity = resp_id_pk
 
         # Decapsulate shared secret
         kem_ct = HybridKEMCiphertext.from_bytes(resp_pkt.kem_ct_bytes)
