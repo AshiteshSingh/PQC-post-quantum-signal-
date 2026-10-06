@@ -50,7 +50,7 @@ class PQRatchetSession:
     def initiate_handshake(
         cls,
         local_identity: IdentityPrivateKey,
-        remote_identity: Optional[IdentityPublicKey] = None,
+        remote_identity: IdentityPublicKey,
     ) -> Tuple["PQRatchetSession", bytes]:
         """
         Initiates outbound session (Alice -> Bob).
@@ -273,8 +273,12 @@ class PQRatchetSession:
         skipped_mk = self.state.retrieve_skipped_key(packet.epoch, packet.seq)
         if skipped_mk is not None:
             aead = ChaCha20Poly1305(skipped_mk)
-            pt = aead.decrypt(nonce, packet.ciphertext, ad)
-            return pt
+            try:
+                pt = aead.decrypt(nonce, packet.ciphertext, ad)
+                self.state.delete_skipped_key(packet.epoch, packet.seq)
+                return pt
+            except Exception:
+                raise ValueError("Cryptographic verification failure: invalid AEAD tag on skipped key")
 
         # Case 2: Asymmetric Ratchet step present
         

@@ -63,8 +63,8 @@ class TestDecentralizedTransport(unittest.IsolatedAsyncioTestCase):
         node_a_sk = IdentityPrivateKey.generate()
         node_b_sk = IdentityPrivateKey.generate()
 
-        node_a = PQP2PNode(local_identity=node_a_sk, listen_host="127.0.0.1", listen_port=19201)
-        node_b = PQP2PNode(local_identity=node_b_sk, listen_host="127.0.0.1", listen_port=19202)
+        node_a = PQP2PNode(local_identity=node_a_sk, trusted_peers=[node_b_sk.public_key()], listen_host="127.0.0.1", listen_port=19201)
+        node_b = PQP2PNode(local_identity=node_b_sk, trusted_peers=[node_a_sk.public_key()], listen_host="127.0.0.1", listen_port=19202)
 
         received_messages = []
         msg_event = asyncio.Event()
@@ -80,7 +80,7 @@ class TestDecentralizedTransport(unittest.IsolatedAsyncioTestCase):
 
         try:
             # Node A connects to Node B across loopback
-            connected_peer_id = await node_a.connect_peer("127.0.0.1", 19202)
+            connected_peer_id = await node_a.connect_peer("127.0.0.1", 19202, node_b_sk.public_key())
             self.assertEqual(connected_peer_id, node_b.peer_id)
 
             # Wait briefly for handshake completion on both sides
@@ -115,9 +115,9 @@ class TestDecentralizedTransport(unittest.IsolatedAsyncioTestCase):
         node_b_sk = IdentityPrivateKey.generate()
         node_c_sk = IdentityPrivateKey.generate()
 
-        node_a = PQP2PNode(local_identity=node_a_sk, listen_host="127.0.0.1", listen_port=19211)
-        node_b = PQP2PNode(local_identity=node_b_sk, listen_host="127.0.0.1", listen_port=19212)
-        node_c = PQP2PNode(local_identity=node_c_sk, listen_host="127.0.0.1", listen_port=19213)
+        node_a = PQP2PNode(local_identity=node_a_sk, trusted_peers=[node_b_sk.public_key(), node_c_sk.public_key()], listen_host="127.0.0.1", listen_port=19211)
+        node_b = PQP2PNode(local_identity=node_b_sk, trusted_peers=[node_a_sk.public_key(), node_c_sk.public_key()], listen_host="127.0.0.1", listen_port=19212)
+        node_c = PQP2PNode(local_identity=node_c_sk, trusted_peers=[node_b_sk.public_key(), node_a_sk.public_key()], listen_host="127.0.0.1", listen_port=19213)
 
         c_received = []
         c_event = asyncio.Event()
@@ -134,8 +134,8 @@ class TestDecentralizedTransport(unittest.IsolatedAsyncioTestCase):
 
         try:
             # Topology setup: A connects to B, C connects to B
-            await node_a.connect_peer("127.0.0.1", 19212)
-            await node_c.connect_peer("127.0.0.1", 19212)
+            await node_a.connect_peer("127.0.0.1", 19212, node_b_sk.public_key())
+            await node_c.connect_peer("127.0.0.1", 19212, node_b_sk.public_key())
 
             await asyncio.sleep(0.15)
 

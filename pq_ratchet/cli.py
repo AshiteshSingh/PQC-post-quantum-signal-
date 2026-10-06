@@ -103,9 +103,9 @@ async def run_pipe_send(
         sys.stderr.write(f"[+] Transmission complete. Cryptographic state securely zeroized.\n")
 
 
-async def run_pipe_recv(listen_host: str, listen_port: int, key_path: str, peer_pub_path: Optional[str]):
+async def run_pipe_recv(listen_host: str, listen_port: int, key_path: str, peer_pub_path: str):
     sk = load_private_key(key_path)
-    peer_pk = load_public_key(peer_pub_path) if peer_pub_path else None
+    peer_pk = load_public_key(peer_pub_path)
 
     server_session = None
     stop_event = asyncio.Event()
@@ -117,7 +117,7 @@ async def run_pipe_recv(listen_host: str, listen_port: int, key_path: str, peer_
             reader=reader,
             writer=writer,
             local_identity=sk,
-            expected_remote_identity=peer_pk,
+            expected_remote_identities=[peer_pk],
         )
         sys.stderr.write(f"[+] Post-Quantum Handshake authenticated. Receiving encrypted stream...\n")
         try:
@@ -145,12 +145,12 @@ async def run_chat(
     host: str,
     port: int,
     key_path: str,
-    peer_pub_path: Optional[str],
+    peer_pub_path: str,
     via_tor: bool = False,
     tor_proxy: Optional[tuple[str, int]] = None,
 ):
     sk = load_private_key(key_path)
-    peer_pk = load_public_key(peer_pub_path) if peer_pub_path else None
+    peer_pk = load_public_key(peer_pub_path)
 
     session: Optional[AsyncPQStreamSession] = None
     connected = asyncio.Event()
@@ -159,7 +159,7 @@ async def run_chat(
         async def on_connect(reader, writer):
             nonlocal session
             print(f"[*] Incoming connection. Performing PQC Handshake (FIPS 203 + FIPS 204)...")
-            session = await AsyncPQStreamSession.accept(reader, writer, sk, peer_pk)
+            session = await AsyncPQStreamSession.accept(reader, writer, sk, [peer_pk])
             print(f"[+] Secure channel active! Every message ratchets forward. Type and hit Enter:\n")
             connected.set()
 
@@ -217,11 +217,12 @@ async def run_chat(
     await session.close()
 
 
-async def run_p2p_node(listen_host: str, listen_port: int, key_path: str, bootstrap_nodes: list[str]):
+async def run_p2p_node(listen_host: str, listen_port: int, key_path: str, bootstrap_nodes: list[str], peer_pub_path: str):
     """Runs a standalone decentralized P2P mesh node."""
     from pq_ratchet.transport.p2p import PQP2PNode
     sk = load_private_key(key_path)
-    node = PQP2PNode(local_identity=sk, listen_host=listen_host, listen_port=listen_port)
+    pk = load_public_key(peer_pub_path)
+    node = PQP2PNode(local_identity=sk, trusted_peers=[pk], listen_host=listen_host, listen_port=listen_port)
     await node.start()
 
     print(f"[+] Post-Quantum P2P Overlay Node initialized.")
@@ -248,11 +249,12 @@ async def run_p2p_node(listen_host: str, listen_port: int, key_path: str, bootst
         print(f"[+] P2P Node cleanly stopped.")
 
 
-async def run_p2p_chat(key_path: str, target_peer_id: str, listen_port: int, bootstrap: Optional[str]):
+async def run_p2p_chat(key_path: str, peer_pub_path: str, target_peer_id: str, listen_port: int, bootstrap: Optional[str]):
     """Decentralized P2P terminal chat via peer swarm routing."""
     from pq_ratchet.transport.p2p import PQP2PNode
     sk = load_private_key(key_path)
-    node = PQP2PNode(local_identity=sk, listen_host="0.0.0.0", listen_port=listen_port)
+    pk = load_public_key(peer_pub_path)
+    node = PQP2PNode(local_identity=sk, trusted_peers=[pk], listen_host="0.0.0.0", listen_port=listen_port)
     await node.start()
 
     print(f"[+] Post-Quantum P2P Swarm Chat active.")
@@ -270,7 +272,7 @@ async def run_p2p_chat(key_path: str, target_peer_id: str, listen_port: int, boo
         bh, bp = bootstrap.split(":")
         print(f"[*] Connecting to bootstrap node {bootstrap}...")
         try:
-            await node.connect_peer(bh, int(bp))
+            await node.connect_peer(bh, int(bp), pk)
             print(f"[+] Connected to swarm mesh via {bootstrap}.")
         except Exception as e:
             print(f"[-] Warning: bootstrap connect failed: {e}")
@@ -359,7 +361,7 @@ def main():
     p_pipe_recv = p_pipe_sub.add_parser("recv", help="Listen for inbound encrypted stream and emit to stdout")
     p_pipe_recv.add_argument("--listen", default="0.0.0.0:9000", help="Listen host:port (default: 0.0.0.0:9000)")
     p_pipe_recv.add_argument("--key", required=True, help="Receiver private key path")
-    p_pipe_recv.add_argument("--peer-pub", help="Optional sender public key path for identity pinning")
+    p_pipe_recv.add_argument("--peer-pub", required=True, help="Sender public key path for identity pinning")
 
     # tunnel
     p_tunnel = subparsers.add_parser("tunnel", help="TCP port-forwarding post-quantum tunnel")
@@ -382,7 +384,7 @@ def main():
     p_chat.add_argument("mode", choices=["listen", "connect"])
     p_chat.add_argument("--addr", default="127.0.0.1:9000", help="Host:port (default: 127.0.0.1:9000)")
     p_chat.add_argument("--key", required=True, help="Your identity private key")
-    p_chat.add_argument("--peer-pub", help="Peer public key")
+    p_chat.add_argument("--peer-pub", required=True, help="Peer public key")
     p_chat.add_argument("--via-tor", action="store_true", help="Connect via local Tor SOCKS5 daemon")
     p_chat.add_argument("--tor-proxy", default=None, help="Tor SOCKS5 proxy host:port (e.g. 127.0.0.1:9050)")
 
@@ -393,10 +395,12 @@ def main():
     p_p2p_node = p_p2p_sub.add_parser("node", help="Run standalone P2P overlay mesh node")
     p_p2p_node.add_argument("--listen", default="0.0.0.0:9100", help="Listen host:port (default: 0.0.0.0:9100)")
     p_p2p_node.add_argument("--key", required=True, help="Node identity private key path")
+    p_p2p_node.add_argument("--peer-pub", required=True, help="Trusted peer public key for authentication")
     p_p2p_node.add_argument("--bootstrap", nargs="*", default=[], help="Bootstrap peer host:port list")
 
     p_p2p_chat = p_p2p_sub.add_parser("chat", help="P2P Swarm Chat directly to a PeerID")
     p_p2p_chat.add_argument("--key", required=True, help="Your identity private key path")
+    p_p2p_chat.add_argument("--peer-pub", required=True, help="Target peer public key")
     p_p2p_chat.add_argument("--target-peer", required=True, help="Target PeerID (pqc_...)")
     p_p2p_chat.add_argument("--port", type=int, default=9101, help="Local listening port (default: 9101)")
     p_p2p_chat.add_argument("--bootstrap", default=None, help="Bootstrap peer host:port to enter swarm")
@@ -474,9 +478,9 @@ def main():
     elif args.subcommand == "p2p":
         if args.p2p_mode == "node":
             lhost, lport = args.listen.split(":")
-            asyncio.run(run_p2p_node(lhost, int(lport), args.key, args.bootstrap))
+            asyncio.run(run_p2p_node(lhost, int(lport), args.key, args.bootstrap, args.peer_pub))
         elif args.p2p_mode == "chat":
-            asyncio.run(run_p2p_chat(args.key, args.target_peer, args.port, args.bootstrap))
+            asyncio.run(run_p2p_chat(args.key, args.peer_pub, args.target_peer, args.port, args.bootstrap))
 
     elif args.subcommand == "tor":
         if args.tor_mode == "status":

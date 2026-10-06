@@ -66,11 +66,13 @@ class PQP2PNode:
     def __init__(
         self,
         local_identity: IdentityPrivateKey,
+        trusted_peers: List[IdentityPublicKey],
         listen_host: str = "0.0.0.0",
         listen_port: int = 9100,
         public_host: Optional[str] = None,
     ) -> None:
         self.local_identity = local_identity
+        self.trusted_peers = trusted_peers
         self.public_key = local_identity.public_key()
         self.peer_id = derive_peer_id(self.public_key)
         self.listen_host = listen_host
@@ -239,6 +241,7 @@ class PQP2PNode:
                 reader=reader,
                 writer=writer,
                 local_identity=self.local_identity,
+                allowed_remote_identities=self.trusted_peers,
             )
             remote_pk = session.session.state.remote_identity
             if not remote_pk:

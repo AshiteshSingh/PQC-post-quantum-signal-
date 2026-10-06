@@ -11,6 +11,7 @@ from pq_ratchet.primitives.identity import (
     IdentityPrivateKey,
     IdentityPublicKey,
 )
+from pq_ratchet.core.framing import HandshakeInitPacket
 from pq_ratchet.constants import MAX_PACKET_PAYLOAD_BYTES
 
 
@@ -37,7 +38,7 @@ class AsyncPQStreamSession:
         host: str,
         port: int,
         local_identity: IdentityPrivateKey,
-        remote_identity: Optional[IdentityPublicKey] = None,
+        remote_identity: IdentityPublicKey,
         via_tor: bool = False,
         tor_proxy: Optional[tuple[str, int]] = None,
     ) -> "AsyncPQStreamSession":
@@ -87,7 +88,7 @@ class AsyncPQStreamSession:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
         local_identity: IdentityPrivateKey,
-        expected_remote_identity: Optional[IdentityPublicKey] = None,
+        allowed_remote_identities: list[IdentityPublicKey],
     ) -> "AsyncPQStreamSession":
         """
         Handles inbound socket connection and executes responder handshake.
@@ -99,11 +100,17 @@ class AsyncPQStreamSession:
             raise ValueError("Inbound init frame exceeds maximum bound")
         init_bytes = await reader.readexactly(init_len)
 
+        init_pkt = HandshakeInitPacket.deserialize(init_bytes)
+        sender_id_pk = IdentityPublicKey.from_bytes(init_pkt.sender_identity_pk_bytes)
+        sender_bytes = sender_id_pk.to_bytes()
+        if not any(sender_bytes == pk.to_bytes() for pk in allowed_remote_identities):
+            raise PermissionError("Inbound connection from untrusted peer identity")
+
         # 2. Respond Handshake
         session, resp_bytes = PQRatchetSession.respond_handshake(
             local_identity=local_identity,
             init_packet_bytes=init_bytes,
-            expected_remote_identity=expected_remote_identity,
+            expected_remote_identity=sender_id_pk,
         )
 
         # 3. Send Handshake Resp

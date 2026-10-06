@@ -366,53 +366,13 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                     "packet": packet_b64,
                 })
 
-            # Action 3: Fallback Server-Mediated send_message (for automated test client)
+            # Action 3: Removed Server-Mediated send_message
             elif action == "send_message":
-                if not session.active_peer or not session.ratchet_session:
-                    await safe_send_json(websocket, {
-                        "type": "error",
-                        "message": "No active post-quantum session established with a peer.",
-                    })
-                    continue
-
-                target_sess = online_users.get(session.active_peer)
-                if not target_sess or not target_sess.ratchet_session:
-                    await safe_send_json(websocket, {
-                        "type": "error",
-                        "message": f"Peer '{session.active_peer}' disconnected or session expired.",
-                    })
-                    continue
-
-                raw_text = data.get("text")
-                if not isinstance(raw_text, str):
-                    continue
-                text = raw_text.strip()
-                if not text or len(text) > 4000:
-                    continue
-
-                raw_ct = session.ratchet_session.ratchet_encrypt(text.encode("utf-8"))
-                pkt = RatchetDataPacket.deserialize(raw_ct)
-                decrypted_bytes = target_sess.ratchet_session.ratchet_decrypt(raw_ct)
-                decrypted_text = decrypted_bytes.decode("utf-8", errors="replace")
-
-                timestamp = time.strftime("%H:%M:%S")
-                msg_out = {
-                    "type": "message",
-                    "sender": clean_user,
-                    "text": decrypted_text,
-                    "timestamp": timestamp,
-                    "pqc_meta": {
-                        "epoch": pkt.epoch,
-                        "seq": pkt.seq,
-                        "has_kem_rekey": pkt.kem_ct is not None,
-                        "kem_bytes": len(pkt.kem_ct) if pkt.kem_ct else 0,
-                        "total_wire_bytes": len(raw_ct),
-                        "aead_tag": raw_ct[-16:].hex()[:10],
-                    },
-                }
-
-                await safe_send_json(websocket, msg_out)
-                await safe_send_json(target_sess.ws, msg_out)
+                await safe_send_json(websocket, {
+                    "type": "error",
+                    "message": "Server-mediated encryption is disabled. Use purely client-side E2EE (relay_packet).",
+                })
+                continue
 
             # Action 4: Mutual Instant Clear Chat
             elif action == "clear_chat":

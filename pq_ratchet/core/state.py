@@ -20,7 +20,8 @@ from pq_ratchet.primitives.kdf import zeroize
 class SessionState:
     """
     Mutable cryptographic state tracking ratchet invariants.
-    Zero-knowledge leak policy: All evicted keys zeroized in-place.
+    Zero-knowledge leak policy: Best-effort memory zeroization. 
+    Note: Python Garbage Collector and CFFI bounds prevent deterministic destruction of complex key objects.
     """
     def __init__(
         self,
@@ -62,14 +63,18 @@ class SessionState:
 
     def retrieve_skipped_key(self, epoch: int, seq: int) -> Optional[bytes]:
         """
-        Retrieves and removes skipped key. Zeroizes stored memory upon extraction.
+        Retrieves skipped key without removing it. Must call delete_skipped_key upon success.
         """
-        key_buf = self.skipped_keys.pop((epoch, seq), None)
+        key_buf = self.skipped_keys.get((epoch, seq))
         if key_buf is None:
             return None
-        result = bytes(key_buf)
-        zeroize(key_buf)
-        return result
+        return bytes(key_buf)
+
+    def delete_skipped_key(self, epoch: int, seq: int) -> None:
+        """Removes and zeroizes a skipped key after successful authentication."""
+        key_buf = self.skipped_keys.pop((epoch, seq), None)
+        if key_buf is not None:
+            zeroize(key_buf)
 
     def zeroize_all(self) -> None:
         """

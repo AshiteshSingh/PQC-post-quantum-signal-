@@ -411,7 +411,7 @@
 
     const notice = document.createElement("div");
     notice.className = "system-notice";
-    notice.textContent = "Chat history zeroized from memory and keys stepped forward";
+    notice.textContent = "Chat history zeroized from memory";
     messagesList.appendChild(notice);
 
     showToast("Chat memory zeroized");
