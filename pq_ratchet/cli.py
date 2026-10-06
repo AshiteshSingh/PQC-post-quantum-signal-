@@ -217,12 +217,14 @@ async def run_chat(
     await session.close()
 
 
-async def run_p2p_node(listen_host: str, listen_port: int, key_path: str, bootstrap_nodes: list[str], peer_pub_path: str):
+async def run_p2p_node(listen_host: str, listen_port: int, key_path: str, bootstrap_nodes: list[str], peer_pub_paths: Union[str, list[str]]):
     """Runs a standalone decentralized P2P mesh node."""
     from pq_ratchet.transport.p2p import PQP2PNode
     sk = load_private_key(key_path)
-    pk = load_public_key(peer_pub_path)
-    node = PQP2PNode(local_identity=sk, trusted_peers=[pk], listen_host=listen_host, listen_port=listen_port)
+    if isinstance(peer_pub_paths, str):
+        peer_pub_paths = [peer_pub_paths]
+    trusted_pks = [load_public_key(p) for p in peer_pub_paths]
+    node = PQP2PNode(local_identity=sk, trusted_peers=trusted_pks, listen_host=listen_host, listen_port=listen_port)
     await node.start()
 
     print(f"[+] Post-Quantum P2P Overlay Node initialized.")
@@ -231,9 +233,20 @@ async def run_p2p_node(listen_host: str, listen_port: int, key_path: str, bootst
 
     if bootstrap_nodes:
         boot_list = []
-        for b in bootstrap_nodes:
+        for i, b in enumerate(bootstrap_nodes):
             parts = b.split(":")
-            boot_list.append((parts[0], int(parts[1])))
+            if len(parts) >= 3:
+                boot_host = parts[0]
+                boot_port = int(parts[1])
+                boot_pk = load_public_key(parts[2])
+                boot_list.append((boot_host, boot_port, boot_pk))
+            elif len(parts) == 2:
+                boot_host = parts[0]
+                boot_port = int(parts[1])
+                if i < len(trusted_pks):
+                    boot_list.append((boot_host, boot_port, trusted_pks[i]))
+                else:
+                    boot_list.append((boot_host, boot_port))
         print(f"[*] Bootstrapping into {len(boot_list)} peer nodes...")
         connected = await node.bootstrap(boot_list)
         print(f"[+] Successfully connected to {connected} bootstrap peers.")
@@ -407,8 +420,8 @@ def main():
     p_p2p_node = p_p2p_sub.add_parser("node", help="Run standalone P2P overlay mesh node")
     p_p2p_node.add_argument("--listen", default="0.0.0.0:9100", help="Listen host:port (default: 0.0.0.0:9100)")
     p_p2p_node.add_argument("--key", required=True, help="Node identity private key path")
-    p_p2p_node.add_argument("--peer-pub", required=True, help="Trusted peer public key for authentication")
-    p_p2p_node.add_argument("--bootstrap", nargs="*", default=[], help="Bootstrap peer host:port list")
+    p_p2p_node.add_argument("--peer-pub", nargs="+", required=True, help="Trusted peer public key path(s) for authentication")
+    p_p2p_node.add_argument("--bootstrap", nargs="*", default=[], help="Bootstrap peer list (host:port or host:port:pubkey_path)")
 
     p_p2p_chat = p_p2p_sub.add_parser("chat", help="P2P Swarm Chat directly to a PeerID")
     p_p2p_chat.add_argument("--key", required=True, help="Your identity private key path")

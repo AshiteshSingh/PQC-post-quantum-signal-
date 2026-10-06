@@ -37,6 +37,7 @@ export const X25519_KEY_BYTES = 32;
 export const X25519_SHARED_SECRET_BYTES = 32;
 
 export const MLDSA65_PUBLIC_KEY_BYTES = 1952;
+export const MLDSA65_SECRET_KEY_BYTES = 4032;
 export const MLDSA65_SIGNATURE_BYTES = 3309;
 
 export const SYMMETRIC_KEY_BYTES = 32;
@@ -250,6 +251,19 @@ export class IdentityPrivateKey {
 
   zeroize() {
     zeroize(this.secretKeyBytes);
+  }
+
+  toBytes() {
+    return concatBytes(this.publicKeyBytes, this.secretKeyBytes);
+  }
+
+  static fromBytes(bytes) {
+    if (bytes.length !== MLDSA65_PUBLIC_KEY_BYTES + MLDSA65_SECRET_KEY_BYTES) {
+      throw new Error(`Invalid identity key length: expected ${MLDSA65_PUBLIC_KEY_BYTES + MLDSA65_SECRET_KEY_BYTES}, got ${bytes.length}`);
+    }
+    const pkBytes = bytes.slice(0, MLDSA65_PUBLIC_KEY_BYTES);
+    const skBytes = bytes.slice(MLDSA65_PUBLIC_KEY_BYTES);
+    return new IdentityPrivateKey(pkBytes, skBytes);
   }
 }
 

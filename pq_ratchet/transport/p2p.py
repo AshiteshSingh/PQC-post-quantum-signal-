@@ -36,6 +36,21 @@ def derive_peer_id(pk: IdentityPublicKey) -> str:
     return f"pqc_{digest[:32]}"
 
 
+def _calculate_shannon_entropy(data: bytes) -> float:
+    """
+    Computes Shannon entropy in bits per byte: H = -sum(p * log2(p)).
+    Complexity: O(N) where N = len(data).
+    """
+    if not data:
+        return 0.0
+    import math
+    counts: Dict[int, int] = {}
+    for b in data:
+        counts[b] = counts.get(b, 0) + 1
+    total = len(data)
+    return -sum((c / total) * math.log2(c / total) for c in counts.values())
+
+
 class P2PMessageEnvelope:
     """
     Framing for P2P mesh control and data delivery.
@@ -248,11 +263,16 @@ class PQP2PNode:
     ) -> bool:
         """
         Routes opaque ciphertext across P2P swarm via multi-hop blind relaying.
-        Security Guarantees:
-        1. msg_type MUST be explicitly specified (no insecure default).
-        2. Structurally validates e2ee_payload against cryptographic framing invariants
-           (RatchetDataPacket + AEAD tag, HandshakeInitPacket, or HandshakeRespPacket)
-           to eliminate plaintext relaying under deceptive type headers.
+
+        Operational & Security Specification:
+        1. Low-level wire routing primitive: Enforces strict syntactic cryptographic framing
+           (FIPS 203/204 Handshake packets, or Double Ratchet wire framing) and statistical entropy
+           verification to eliminate unencapsulated or framed application plaintexts.
+        2. Threat & Confidentiality Boundary: Because intermediate blind relays do not possess
+           the end-to-end symmetric ratchet keys, mathematical IND-CCA2 confidentiality and
+           EUF-CMA integrity are enforced at the session layer. Application callers MUST use
+           `send_message_to_peer()` / `send_e2ee_chat()`, which evaluate ChaCha20-Poly1305.
+        3. msg_type MUST be explicitly specified (no insecure default).
         Complexity: O(k) fanout over k active peer links.
         """
         if msg_type == P2PMessageEnvelope.TYPE_E2EE_RATCHET_DATA:
@@ -260,6 +280,20 @@ class PQP2PNode:
                 pkt = RatchetDataPacket.deserialize(e2ee_payload)
                 if len(pkt.ciphertext) < AEAD_TAG_BYTES:
                     raise ValueError(f"Ciphertext length {len(pkt.ciphertext)} is shorter than AEAD tag ({AEAD_TAG_BYTES} bytes)")
+
+                # Heuristic Plaintext Injection Guard:
+                # Authentic AEAD ciphertext is indistinguishable from uniform random noise (H > 6.0 bits/byte).
+                # Plaintext injected directly into the ciphertext field exhibits abnormally low entropy
+                # and high printable ASCII concentration.
+                if len(pkt.ciphertext) >= 32:
+                    entropy = _calculate_shannon_entropy(pkt.ciphertext)
+                    printable_count = sum(1 for b in pkt.ciphertext if 32 <= b <= 126 or b in (9, 10, 13))
+                    printable_ratio = printable_count / len(pkt.ciphertext)
+                    if entropy < 4.5 or printable_ratio > 0.85:
+                        raise ValueError(
+                            f"Insecure relay rejection: RatchetDataPacket ciphertext exhibits plaintext characteristics "
+                            f"(entropy={entropy:.2f} bits/byte, printable_ratio={printable_ratio:.2%})"
+                        )
             except Exception as exc:
                 raise ValueError(
                     f"Insecure relay rejection: payload is not a valid encrypted RatchetDataPacket ({exc})"
@@ -422,7 +456,7 @@ class PQP2PNode:
         Returns number of successfully established connections.
         """
         connected = 0
-        for node in bootstrap_nodes:
+        for i, node in enumerate(bootstrap_nodes):
             if len(node) == 3:
                 host, port, expected_pk = node
             elif len(node) == 2:
@@ -434,8 +468,17 @@ class PQP2PNode:
             if host == self.listen_host and port == self.listen_port:
                 continue
 
-            if expected_pk is None and self.trusted_peers:
-                expected_pk = self.trusted_peers[0]
+            # Per-Node Authentication & Key Resolution:
+            # 1. Explicit key in 3-tuple takes precedence.
+            # 2. If 2-tuple, match by positional index if 1:1 mapping exists (len(trusted_peers) == len(bootstrap_nodes)).
+            # 3. If exactly one trusted peer is configured globally, map that single peer.
+            # 4. If multiple trusted peers exist without explicit mapping, reject ambiguity
+            #    to prevent authenticating disparate bootstrap addresses under a single wrong peer key.
+            if expected_pk is None:
+                if i < len(self.trusted_peers) and len(self.trusted_peers) == len(bootstrap_nodes):
+                    expected_pk = self.trusted_peers[i]
+                elif len(self.trusted_peers) == 1:
+                    expected_pk = self.trusted_peers[0]
 
             if expected_pk is None:
                 continue

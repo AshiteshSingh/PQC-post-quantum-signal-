@@ -43,6 +43,7 @@ var PQC_MODULE = (() => {
     MAX_RATCHET_SKIP_GAP: () => MAX_RATCHET_SKIP_GAP,
     MAX_SKIPPED_KEYS_CACHE: () => MAX_SKIPPED_KEYS_CACHE,
     MLDSA65_PUBLIC_KEY_BYTES: () => MLDSA65_PUBLIC_KEY_BYTES,
+    MLDSA65_SECRET_KEY_BYTES: () => MLDSA65_SECRET_KEY_BYTES,
     MLDSA65_SIGNATURE_BYTES: () => MLDSA65_SIGNATURE_BYTES,
     MLKEM768_CIPHERTEXT_BYTES: () => MLKEM768_CIPHERTEXT_BYTES,
     MLKEM768_PUBLIC_KEY_BYTES: () => MLKEM768_PUBLIC_KEY_BYTES,
@@ -4195,6 +4196,7 @@ var PQC_MODULE = (() => {
   var X25519_KEY_BYTES = 32;
   var X25519_SHARED_SECRET_BYTES = 32;
   var MLDSA65_PUBLIC_KEY_BYTES = 1952;
+  var MLDSA65_SECRET_KEY_BYTES = 4032;
   var MLDSA65_SIGNATURE_BYTES = 3309;
   var SYMMETRIC_KEY_BYTES = 32;
   var AEAD_NONCE_BYTES = 12;
@@ -4375,6 +4377,17 @@ var PQC_MODULE = (() => {
     }
     zeroize() {
       zeroize(this.secretKeyBytes);
+    }
+    toBytes() {
+      return concatBytes3(this.publicKeyBytes, this.secretKeyBytes);
+    }
+    static fromBytes(bytes) {
+      if (bytes.length !== MLDSA65_PUBLIC_KEY_BYTES + MLDSA65_SECRET_KEY_BYTES) {
+        throw new Error(`Invalid identity key length: expected ${MLDSA65_PUBLIC_KEY_BYTES + MLDSA65_SECRET_KEY_BYTES}, got ${bytes.length}`);
+      }
+      const pkBytes = bytes.slice(0, MLDSA65_PUBLIC_KEY_BYTES);
+      const skBytes = bytes.slice(MLDSA65_PUBLIC_KEY_BYTES);
+      return new _IdentityPrivateKey(pkBytes, skBytes);
     }
   };
   var HybridKEMCiphertext = class _HybridKEMCiphertext {

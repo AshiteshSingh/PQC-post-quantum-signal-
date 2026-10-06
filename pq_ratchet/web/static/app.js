@@ -76,26 +76,42 @@
   const btnMarkVerified = document.getElementById("btn-mark-verified");
   const safetyAlertBox = document.getElementById("safety-alert-box");
 
-  // Step 1: Join Session & Generate Ephemeral Post-Quantum Identity
+  // Step 1: Join Session & Retrieve / Persist Long-Term Post-Quantum Identity
   joinForm.addEventListener("submit", function (e) {
     e.preventDefault();
     const handle = inputUsername.value.trim();
     if (!handle) return;
 
-    if (btnJoinText) btnJoinText.textContent = "Sampling Lattice Keys...";
+    if (btnJoinText) btnJoinText.textContent = "Loading / Sampling Keys...";
 
-    // Generate ML-DSA-65 keypair directly in client memory
+    // Retrieve or sample ML-DSA-65 identity keypair directly in client memory
     setTimeout(() => {
       try {
-        localIdentity = PQC.IdentityPrivateKey.generate();
         currentUsername = handle;
         currentUserTag.textContent = handle;
+
+        // Long-term Identity Continuity: Retrieve or persist ML-DSA-65 identity keypair
+        const identityStorageKey = "pqc_local_identity_" + handle;
+        const savedIdentityB64 = localStorage.getItem(identityStorageKey);
+        if (savedIdentityB64) {
+          try {
+            const rawIdBytes = PQC.base64ToBytes(savedIdentityB64);
+            localIdentity = PQC.IdentityPrivateKey.fromBytes(rawIdBytes);
+          } catch (loadErr) {
+            localIdentity = PQC.IdentityPrivateKey.generate();
+            localStorage.setItem(identityStorageKey, PQC.bytesToBase64(localIdentity.toBytes()));
+          }
+        } else {
+          localIdentity = PQC.IdentityPrivateKey.generate();
+          localStorage.setItem(identityStorageKey, PQC.bytesToBase64(localIdentity.toBytes()));
+        }
+
         myFingerprintCode.textContent = localIdentity.publicKey().fingerprint();
 
         joinModal.classList.add("hidden");
         connectWebSocket(handle);
       } catch (err) {
-        alert("Failed to generate post-quantum identity: " + err.message);
+        alert("Failed to initialize post-quantum identity: " + err.message);
         if (btnJoinText) btnJoinText.textContent = "Continue";
       }
     }, 20);

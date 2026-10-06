@@ -18,7 +18,10 @@ from pq_ratchet.transport.p2p import (
     derive_peer_id,
 )
 from pq_ratchet.core.ratchet import PQRatchetSession
-from pq_ratchet.core.framing import HandshakeRespPacket
+from pq_ratchet.core.framing import (
+    HandshakeRespPacket,
+    RatchetDataPacket,
+)
 
 
 class TestDecentralizedTransport(unittest.IsolatedAsyncioTestCase):
@@ -321,6 +324,82 @@ class TestDecentralizedTransport(unittest.IsolatedAsyncioTestCase):
         ciphertext = alice_session.ratchet_encrypt(test_msg)
         decrypted = bob_real_session.ratchet_decrypt(ciphertext)
         self.assertEqual(decrypted, test_msg)
+
+    async def test_send_relayed_entropy_and_plaintext_rejection(self):
+        """
+        Validates that send_relayed() actively detects and rejects a RatchetDataPacket
+        whose ciphertext field contains unencrypted plaintext instead of genuine AEAD ciphertext.
+        """
+        node_a_sk = IdentityPrivateKey.generate()
+        node_a = PQP2PNode(local_identity=node_a_sk, trusted_peers=[], listen_host="127.0.0.1", listen_port=19231)
+
+        # Construct a structurally valid RatchetDataPacket wrapping raw ASCII plaintext
+        raw_plaintext = b"This is a plaintext message of length 58B packed directly."
+        fake_pkt = RatchetDataPacket(
+            epoch=0,
+            seq=0,
+            kem_ct=None,
+            next_kem_pk=None,
+            ciphertext=raw_plaintext,
+        )
+        fake_payload = fake_pkt.serialize()
+
+        # Invariant: send_relayed rejects the frame due to low entropy and plaintext characteristics
+        with self.assertRaises(ValueError) as ctx:
+            await node_a.send_relayed(
+                target_peer_id="pqc_targetpeer",
+                e2ee_payload=fake_payload,
+                msg_type=P2PMessageEnvelope.TYPE_E2EE_RATCHET_DATA,
+            )
+        self.assertIn("plaintext characteristics", str(ctx.exception))
+
+    async def test_multi_node_bootstrap_distinct_keys(self):
+        """
+        Validates that bootstrap() correctly authenticates multiple distinct peers with their
+        respective, distinct public keys instead of falling back to a single shared key for all.
+        """
+        node_a_sk = IdentityPrivateKey.generate()
+        node_b_sk = IdentityPrivateKey.generate()
+        node_c_sk = IdentityPrivateKey.generate()
+
+        node_a = PQP2PNode(
+            local_identity=node_a_sk,
+            trusted_peers=[node_b_sk.public_key(), node_c_sk.public_key()],
+            listen_host="127.0.0.1",
+            listen_port=19234,
+        )
+        node_b = PQP2PNode(
+            local_identity=node_b_sk,
+            trusted_peers=[node_a_sk.public_key()],
+            listen_host="127.0.0.1",
+            listen_port=19235,
+        )
+        node_c = PQP2PNode(
+            local_identity=node_c_sk,
+            trusted_peers=[node_a_sk.public_key()],
+            listen_host="127.0.0.1",
+            listen_port=19236,
+        )
+
+        await node_a.start()
+        await node_b.start()
+        await node_c.start()
+
+        try:
+            # Multi-node bootstrap via explicit 3-tuples (host, port, expected_pk)
+            boot_nodes = [
+                ("127.0.0.1", 19235, node_b_sk.public_key()),
+                ("127.0.0.1", 19236, node_c_sk.public_key()),
+            ]
+            connected = await node_a.bootstrap(boot_nodes)
+            self.assertEqual(connected, 2)
+            connected_peers = node_a.get_connected_peers()
+            self.assertIn(node_b.peer_id, connected_peers)
+            self.assertIn(node_c.peer_id, connected_peers)
+        finally:
+            await node_a.stop()
+            await node_b.stop()
+            await node_c.stop()
 
 
 if __name__ == "__main__":
