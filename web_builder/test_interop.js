@@ -1,6 +1,6 @@
-const { ml_kem768 } = require('@noble/post-quantum/ml-kem.js');
-const { ml_dsa65 } = require('@noble/post-quantum/ml-dsa.js');
-const { spawnSync } = require('child_process');
+import { ml_kem768 } from '@noble/post-quantum/ml-kem.js';
+import { ml_dsa65 } from '@noble/post-quantum/ml-dsa.js';
+import { spawnSync } from 'child_process';
 
 // 1. Test ML-KEM: JS keygen -> Python encap -> JS decap
 const js_kem = ml_kem768.keygen();

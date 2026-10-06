@@ -46,6 +46,16 @@ class IdentityPublicKey:
         except Exception:
             return False
 
+    def fingerprint(self) -> str:
+        """
+        Computes SHA3-256 fingerprint over raw public key bytes.
+        Returns canonical formatted string: 'mldsa65:<64-hex-digest>'
+        Complexity: O(N) where N = MLDSA65_PUBLIC_KEY_BYTES.
+        """
+        import hashlib
+        digest = hashlib.sha3_256(self.to_bytes()).hexdigest()
+        return f"mldsa65:{digest}"
+
 
 class IdentityPrivateKey:
     """

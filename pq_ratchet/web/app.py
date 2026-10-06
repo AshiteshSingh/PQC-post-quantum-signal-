@@ -222,12 +222,12 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
     online_users[clean_user] = session
 
     # Acknowledge connection immediately with 1-hour TTL
-    fp = session.identity.public_key().to_bytes()[:8].hex() if session.identity else "none"
+    fp = session.identity.public_key().fingerprint() if session.identity else "none"
     await safe_send_json(websocket, {
         "type": "session_registered",
         "username": clean_user,
         "ttl": session.time_remaining(),
-        "fingerprint": f"mldsa65:{fp}...",
+        "fingerprint": fp,
     })
 
     try:

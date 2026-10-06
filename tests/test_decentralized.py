@@ -17,6 +17,7 @@ from pq_ratchet.transport.p2p import (
     P2PMessageEnvelope,
     derive_peer_id,
 )
+from pq_ratchet.core.ratchet import PQRatchetSession
 
 
 class TestDecentralizedTransport(unittest.IsolatedAsyncioTestCase):
@@ -194,6 +195,46 @@ class TestDecentralizedTransport(unittest.IsolatedAsyncioTestCase):
                     e2ee_payload=b"Insecure raw chat bytes",
                     msg_type=P2PMessageEnvelope.TYPE_CHAT_DATA,
                 )
+
+            # Verify structural cryptographic enforcement: deceptive label on raw plaintext is rejected
+            with self.assertRaises(ValueError):
+                await node_a.send_relayed(
+                    target_peer_id=node_c.peer_id,
+                    e2ee_payload=b"Plaintext masquerading as ratchet ciphertext",
+                    msg_type=P2PMessageEnvelope.TYPE_E2EE_RATCHET_DATA,
+                )
+
+            # Invariant 5: Anti-replay protection preserves active session integrity
+            # Inject an unconfirmed / replayed handshake init
+            _, dummy_init_bytes = PQRatchetSession.initiate_handshake(
+                local_identity=node_a_sk,
+                remote_identity=node_c_sk.public_key(),
+            )
+            await node_c._process_destination_packet(
+                origin=node_a.peer_id,
+                msg_type=P2PMessageEnvelope.TYPE_E2EE_HANDSHAKE_INIT,
+                raw_payload=dummy_init_bytes,
+            )
+
+            # Replaying the exact same handshake init again is dropped by the anti-replay cache
+            await node_c._process_destination_packet(
+                origin=node_a.peer_id,
+                msg_type=P2PMessageEnvelope.TYPE_E2EE_HANDSHAKE_INIT,
+                raw_payload=dummy_init_bytes,
+            )
+
+            # Established session between A and C remains intact and continues ratcheting
+            c_event.clear()
+            post_replay_payload = b"Payload after replayed handshake attempt"
+            sent_post = await node_a.send_message_to_peer(
+                target_peer_id=node_c.peer_id,
+                message=post_replay_payload,
+                target_pk=node_c_sk.public_key(),
+                force_relay=True,
+            )
+            self.assertTrue(sent_post)
+            await asyncio.wait_for(c_event.wait(), timeout=5.0)
+            self.assertEqual(c_received[-1], (node_a.peer_id, post_replay_payload))
 
         finally:
             await node_a.stop()

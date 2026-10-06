@@ -15,7 +15,7 @@
 import { ml_kem768 } from '@noble/post-quantum/ml-kem.js';
 import { ml_dsa65 } from '@noble/post-quantum/ml-dsa.js';
 import { x25519 } from '@noble/curves/ed25519.js';
-import { sha3_512 } from '@noble/hashes/sha3.js';
+import { sha3_512, sha3_256 } from '@noble/hashes/sha3.js';
 import { hkdf } from '@noble/hashes/hkdf.js';
 import { hmac } from '@noble/hashes/hmac.js';
 import { chacha20poly1305 } from '@noble/ciphers/chacha.js';
@@ -51,9 +51,36 @@ export const DOMAIN_ASYM_RATCHET = new TextEncoder().encode("PQ-RATCHET-ASYM-RAT
 export const DOMAIN_CHAIN_ADVANCE = new TextEncoder().encode("PQ-RATCHET-SYM-CHAIN-v1");
 export const DOMAIN_MESSAGE_KEY = new TextEncoder().encode("PQ-RATCHET-MSG-KEY-v1");
 export const DOMAIN_AUTH_TRANSCRIPT = new TextEncoder().encode("PQ-RATCHET-AUTH-TRANSCRIPT-v1");
+export const DOMAIN_AUTH_INITIATOR = new TextEncoder().encode("PQ-RATCHET-AUTH-INIT-v1");
+export const DOMAIN_AUTH_RESPONDER = new TextEncoder().encode("PQ-RATCHET-AUTH-RESP-v1");
 
 export const MAX_SKIPPED_KEYS_CACHE = 1000;
+export const MAX_RATCHET_SKIP_GAP = 1000;
 export const MAX_PACKET_PAYLOAD_BYTES = 16 * 1024 * 1024;
+
+export function computeInitiatorTranscript(version, initiatorIdPK, responderIdPK, initiatorEphemKEMPK) {
+  return concatBytes(
+    DOMAIN_AUTH_INITIATOR,
+    new Uint8Array([version]),
+    new TextEncoder().encode("INITIATOR"),
+    initiatorIdPK,
+    responderIdPK,
+    initiatorEphemKEMPK
+  );
+}
+
+export function computeResponderTranscript(version, initiatorIdPK, responderIdPK, initiatorEphemKEMPK, kemCt, responderEphemKEMPK) {
+  return concatBytes(
+    DOMAIN_AUTH_RESPONDER,
+    new Uint8Array([version]),
+    new TextEncoder().encode("RESPONDER"),
+    initiatorIdPK,
+    responderIdPK,
+    initiatorEphemKEMPK,
+    kemCt,
+    responderEphemKEMPK
+  );
+}
 
 // Memory Management & Zeroization
 export function zeroize(buf) {
@@ -192,7 +219,8 @@ export class IdentityPublicKey {
   }
 
   fingerprint() {
-    return `mldsa65:${bytesToHex(this.raw_bytes.slice(0, 8))}...`;
+    const digest = sha3_256(this.raw_bytes);
+    return `mldsa65:${bytesToHex(digest)}`;
   }
 }
 
@@ -525,15 +553,27 @@ export class PQRatchetSession {
     this.skippedKeys = new Map(); // key: `${epoch}:${seq}` -> messageKey
   }
 
-  static initiateHandshake(localIdentity, remoteIdentity = null) {
+  static initiateHandshake(localIdentity, remoteIdentity) {
+    if (!remoteIdentity) {
+      throw new Error("remoteIdentity is required for authenticated handshake");
+    }
     const ephemSK = HybridKEMPrivateKey.generate();
     const ephemPK = ephemSK.publicKey();
     const ephemPKBytes = ephemPK.toBytes();
 
-    const sig = localIdentity.sign_prekey(ephemPKBytes);
+    const localIdPKBytes = localIdentity.publicKey().toBytes();
+    const remoteIdPKBytes = remoteIdentity.toBytes();
+
+    const initTranscript = computeInitiatorTranscript(
+      PROTOCOL_VERSION,
+      localIdPKBytes,
+      remoteIdPKBytes,
+      ephemPKBytes
+    );
+    const sig = localIdentity.sign(initTranscript);
 
     const initPacket = new HandshakeInitPacket(
-      localIdentity.publicKey().toBytes(),
+      localIdPKBytes,
       ephemPKBytes,
       sig
     );
@@ -544,18 +584,24 @@ export class PQRatchetSession {
     return [session, initPacket.serialize()];
   }
 
-  static respondHandshake(localIdentity, initPacketBytes, expectedRemoteIdentity = null) {
+  static respondHandshake(localIdentity, initPacketBytes, expectedRemoteIdentity) {
+    if (!expectedRemoteIdentity) {
+      throw new Error("expectedRemoteIdentity is required for authenticated handshake");
+    }
     const initPkt = HandshakeInitPacket.deserialize(initPacketBytes);
     const senderIdPK = IdentityPublicKey.fromBytes(initPkt.sender_identity_pk_bytes);
 
-    if (expectedRemoteIdentity) {
-      if (!constantTimeCompare(senderIdPK.toBytes(), expectedRemoteIdentity.toBytes())) {
-        throw new Error("Initiator identity does not match expected peer public key");
-      }
+    if (!constantTimeCompare(senderIdPK.toBytes(), expectedRemoteIdentity.toBytes())) {
+      throw new Error("Initiator identity does not match expected peer public key");
     }
 
-    const expectedSignedPayload = concatBytes(DOMAIN_AUTH_TRANSCRIPT, initPkt.ephemeral_kem_pk_bytes);
-    if (!senderIdPK.verify(initPkt.signature, expectedSignedPayload)) {
+    const expectedInitTranscript = computeInitiatorTranscript(
+      PROTOCOL_VERSION,
+      senderIdPK.toBytes(),
+      localIdentity.publicKey().toBytes(),
+      initPkt.ephemeral_kem_pk_bytes
+    );
+    if (!senderIdPK.verify(initPkt.signature, expectedInitTranscript)) {
       throw new Error("Cryptographic verification failure: invalid initiator prekey signature");
     }
 
@@ -569,8 +615,15 @@ export class PQRatchetSession {
     const bobEphemPK = bobEphemSK.publicKey();
     const bobEphemPKBytes = bobEphemPK.toBytes();
 
-    // Sign response transcript: (Ciphertext || Bob Ephem PK)
-    const respTranscript = concatBytes(DOMAIN_AUTH_TRANSCRIPT, kemCt.toBytes(), bobEphemPKBytes);
+    // Sign full response transcript: (Version || Responder || Alice ID || Bob ID || Alice Ephem || CT || Bob Ephem)
+    const respTranscript = computeResponderTranscript(
+      PROTOCOL_VERSION,
+      senderIdPK.toBytes(),
+      localIdentity.publicKey().toBytes(),
+      initPkt.ephemeral_kem_pk_bytes,
+      kemCt.toBytes(),
+      bobEphemPKBytes
+    );
     const respSig = localIdentity.sign(respTranscript);
 
     // Derive initial root and sending chain key
@@ -608,8 +661,15 @@ export class PQRatchetSession {
       this.remoteIdentity = respIdPK;
     }
 
-    const respTranscript = concatBytes(DOMAIN_AUTH_TRANSCRIPT, respPkt.kem_ct_bytes, respPkt.ephemeral_kem_pk_bytes);
-    if (!respIdPK.verify(respPkt.signature, respTranscript)) {
+    const expectedRespTranscript = computeResponderTranscript(
+      PROTOCOL_VERSION,
+      this.localIdentity.publicKey().toBytes(),
+      respIdPK.toBytes(),
+      this.localEphemSK.publicKey().toBytes(),
+      respPkt.kem_ct_bytes,
+      respPkt.ephemeral_kem_pk_bytes
+    );
+    if (!respIdPK.verify(respPkt.signature, expectedRespTranscript)) {
       throw new Error("Cryptographic verification failure: invalid responder signature");
     }
 
@@ -641,7 +701,7 @@ export class PQRatchetSession {
     this._pendingKemCt = nextKemCt.toBytes();
     this._pendingNextKemPk = aliceNextPK.toBytes();
 
-    // Epoch advancement on outbound asymmetric ratchet turn (Issue #1 fix)
+    // Epoch advancement on outbound asymmetric ratchet turn
     this.epoch += 1;
   }
 
@@ -684,102 +744,142 @@ export class PQRatchetSession {
     const nonce = RatchetDataPacket.deriveNonce(packet.epoch, packet.seq);
     const ad = packet.getAssociatedData();
 
-    // Check if key is already in skipped-keys cache
+    // Case 1: Check skipped keys cache
     const cacheKey = `${packet.epoch}:${packet.seq}`;
     if (this.skippedKeys.has(cacheKey)) {
       const mk = this.skippedKeys.get(cacheKey);
-      this.skippedKeys.delete(cacheKey);
       const cipher = chacha20poly1305(mk, nonce, ad);
-      const pt = cipher.decrypt(packet.ciphertext);
+      let pt;
+      try {
+        pt = cipher.decrypt(packet.ciphertext);
+      } catch (e) {
+        throw new Error("Cryptographic verification failure: invalid AEAD tag on skipped key");
+      }
+      this.skippedKeys.delete(cacheKey);
       zeroize(mk);
       return pt;
     }
 
-    // Asymmetric Ratchet Step: Inbound packet contains KEM ciphertext
-    if (packet.kem_ct) {
-      if (!this.localEphemSK) {
-        throw new Error("Cannot process KEM ratchet step: local private key absent");
-      }
+    // Case 2: Inbound packet requires ratchet step
+    // Draft all state modifications without mutating active session
+    let draftRootKey = this.rootKey ? new Uint8Array(this.rootKey) : null;
+    let draftRecvChain = this.receivingChainKey ? new Uint8Array(this.receivingChainKey) : null;
+    let draftSendChain = this.sendingChainKey ? new Uint8Array(this.sendingChainKey) : null;
+    let draftRemoteEphemPK = this.remoteEphemPK;
+    let draftLocalEphemSK = this.localEphemSK;
+    let draftPendingKemCt = this._pendingKemCt;
+    let draftPendingNextKemPk = this._pendingNextKemPk;
+    let draftEpoch = this.epoch;
+    let draftRecvSeq = this.receivingSeq;
+    let draftSendSeq = this.sendingSeq;
 
-      // Skip forward remaining messages on previous receiving chain if needed
-      this._skipMessageKeys(packet.epoch, packet.seq);
-
+    if (packet.kem_ct && draftLocalEphemSK) {
       const kemCt = HybridKEMCiphertext.fromBytes(packet.kem_ct);
-      const sharedSecret = this.localEphemSK.decapsulate(kemCt);
+      const sharedSecret = draftLocalEphemSK.decapsulate(kemCt);
 
-      // Ingest uncompromised SS -> Post-Compromise Security achieved
-      const [newRootRecv, recvChain] = asymmetric_ratchet_kdf(this.rootKey, sharedSecret, DOMAIN_ASYM_RATCHET);
-      this.rootKey = newRootRecv;
-      this.receivingChainKey = recvChain;
-      this.receivingSeq = 0;
+      const [newRootRecv, recvChain] = asymmetric_ratchet_kdf(draftRootKey, sharedSecret, DOMAIN_ASYM_RATCHET);
+      draftRootKey = newRootRecv;
+      draftRecvChain = recvChain;
+      draftRecvSeq = 0;
+      draftEpoch = packet.epoch;
+      draftLocalEphemSK = null;
 
-      // Update remote ephemeral public key if next PK is attached
       if (packet.next_kem_pk) {
-        this.remoteEphemPK = HybridKEMPublicKey.fromBytes(packet.next_kem_pk);
+        draftRemoteEphemPK = HybridKEMPublicKey.fromBytes(packet.next_kem_pk);
       }
 
-      // Erase consumed local private key
-      this.localEphemSK.zeroize();
-      this.localEphemSK = null;
+      if (draftRemoteEphemPK) {
+        const localNextSK = HybridKEMPrivateKey.generate();
+        const localNextPK = localNextSK.publicKey();
+        const [nextKemCt, nextSS] = draftRemoteEphemPK.encapsulate();
 
-      // Sample new ephemeral keypair and encapsulate against peer's PK
-      const localNextSK = HybridKEMPrivateKey.generate();
-      const localNextPK = localNextSK.publicKey();
-      const [nextKemCt, nextSS] = this.remoteEphemPK.encapsulate();
+        const [newRootSend, sendChain] = asymmetric_ratchet_kdf(draftRootKey, nextSS, DOMAIN_ASYM_RATCHET);
+        draftRootKey = newRootSend;
+        draftSendChain = sendChain;
+        draftLocalEphemSK = localNextSK;
+        draftSendSeq = 0;
 
-      // Advance root key to derive new sending chain key
-      const [newRootSend, sendChain] = asymmetric_ratchet_kdf(this.rootKey, nextSS, DOMAIN_ASYM_RATCHET);
-      this.rootKey = newRootSend;
-      if (this.sendingChainKey) zeroize(this.sendingChainKey);
-      this.sendingChainKey = sendChain;
-      this.localEphemSK = localNextSK;
-      this.sendingSeq = 0;
-
-      this._pendingKemCt = nextKemCt.toBytes();
-      this._pendingNextKemPk = localNextPK.toBytes();
-
-      // Epoch increment on new asymmetric turn
-      this.epoch = Math.max(this.epoch, packet.epoch) + 1;
-    } else {
-      this._skipMessageKeys(packet.epoch, packet.seq);
+        draftPendingKemCt = nextKemCt.toBytes();
+        draftPendingNextKemPk = localNextPK.toBytes();
+      }
     }
 
-    if (!this.receivingChainKey) {
+    if (!draftRecvChain) {
       throw new Error("Receiving chain key not initialized");
     }
 
-    const [nextChain, messageKey] = symmetric_chain_step(this.receivingChainKey);
-    zeroize(this.receivingChainKey);
-    this.receivingChainKey = nextChain;
-    this.receivingSeq += 1;
-
-    const cipher = chacha20poly1305(messageKey, nonce, ad);
-    const plaintext = cipher.decrypt(packet.ciphertext);
-    zeroize(messageKey);
-
-    return plaintext;
-  }
-
-  _skipMessageKeys(untilEpoch, untilSeq) {
-    if (!this.receivingChainKey) return;
-    if (this.receivingSeq + 100 < untilSeq) {
-      throw new Error("Too many messages skipped; potential denial of service");
+    if (packet.seq < draftRecvSeq) {
+      throw new Error(`Monotonicity violation: inbound seq ${packet.seq} < receiving seq ${draftRecvSeq}`);
     }
-    while (this.receivingSeq < untilSeq) {
-      const [nextChain, mk] = symmetric_chain_step(this.receivingChainKey);
-      zeroize(this.receivingChainKey);
-      this.receivingChainKey = nextChain;
-      const key = `${untilEpoch}:${this.receivingSeq}`;
+
+    const gap = packet.seq - draftRecvSeq;
+    if (gap > MAX_RATCHET_SKIP_GAP) {
+      throw new Error(`Sequence gap ${gap} exceeds safety bound ${MAX_RATCHET_SKIP_GAP}`);
+    }
+
+    const draftPendingSkipped = [];
+    let currChain = draftRecvChain;
+    let currSeq = draftRecvSeq;
+
+    while (currSeq < packet.seq) {
+      const [nextChain, skippedMk] = symmetric_chain_step(currChain);
+      zeroize(currChain);
+      currChain = nextChain;
+      draftPendingSkipped.push([`${packet.epoch}:${currSeq}`, skippedMk]);
+      currSeq += 1;
+    }
+
+    const [finalRecvChain, targetMessageKey] = symmetric_chain_step(currChain);
+    zeroize(currChain);
+    draftRecvChain = finalRecvChain;
+    draftRecvSeq = packet.seq + 1;
+
+    const cipher = chacha20poly1305(targetMessageKey, nonce, ad);
+    let plaintext;
+    try {
+      plaintext = cipher.decrypt(packet.ciphertext);
+    } catch (e) {
+      // AEAD failure: Zeroize all draft buffers without mutating active state
+      for (const [_, mk] of draftPendingSkipped) {
+        zeroize(mk);
+      }
+      zeroize(targetMessageKey);
+      zeroize(draftRecvChain);
+      if (draftSendChain && draftSendChain !== this.sendingChainKey) zeroize(draftSendChain);
+      if (draftRootKey && draftRootKey !== this.rootKey) zeroize(draftRootKey);
+      if (draftLocalEphemSK && draftLocalEphemSK !== this.localEphemSK) draftLocalEphemSK.zeroize();
+      throw new Error("Cryptographic verification failure: invalid AEAD authentication tag");
+    }
+    zeroize(targetMessageKey);
+
+    // AEAD authentication succeeded: commit drafted state changes
+    if (this.rootKey) zeroize(this.rootKey);
+    if (this.receivingChainKey) zeroize(this.receivingChainKey);
+    if (this.sendingChainKey && this.sendingChainKey !== draftSendChain) zeroize(this.sendingChainKey);
+    if (this.localEphemSK && this.localEphemSK !== draftLocalEphemSK) this.localEphemSK.zeroize();
+
+    this.rootKey = draftRootKey;
+    this.receivingChainKey = draftRecvChain;
+    this.sendingChainKey = draftSendChain;
+    this.remoteEphemPK = draftRemoteEphemPK;
+    this.localEphemSK = draftLocalEphemSK;
+    this._pendingKemCt = draftPendingKemCt;
+    this._pendingNextKemPk = draftPendingNextKemPk;
+    this.epoch = draftEpoch;
+    this.receivingSeq = draftRecvSeq;
+    this.sendingSeq = draftSendSeq;
+
+    for (const [key, mk] of draftPendingSkipped) {
       if (this.skippedKeys.size >= MAX_SKIPPED_KEYS_CACHE) {
-        // Evict oldest
-        const firstKey = this.skippedKeys.keys().next().value;
-        const oldKey = this.skippedKeys.get(firstKey);
-        zeroize(oldKey);
-        this.skippedKeys.delete(firstKey);
+        const oldestKey = this.skippedKeys.keys().next().value;
+        const oldestMk = this.skippedKeys.get(oldestKey);
+        zeroize(oldestMk);
+        this.skippedKeys.delete(oldestKey);
       }
       this.skippedKeys.set(key, mk);
-      this.receivingSeq += 1;
     }
+
+    return plaintext;
   }
 
   close() {
@@ -807,6 +907,8 @@ if (typeof window !== 'undefined') {
     HandshakeRespPacket,
     RatchetDataPacket,
     PQRatchetSession,
+    computeInitiatorTranscript,
+    computeResponderTranscript,
     dual_prf_combine,
     asymmetric_ratchet_kdf,
     symmetric_chain_step,
@@ -823,6 +925,9 @@ if (typeof window !== 'undefined') {
       MLDSA65_PUBLIC_KEY_BYTES,
       MLDSA65_SIGNATURE_BYTES,
       X25519_KEY_BYTES,
+      DOMAIN_AUTH_INITIATOR,
+      DOMAIN_AUTH_RESPONDER,
+      MAX_RATCHET_SKIP_GAP,
     }
   };
 }

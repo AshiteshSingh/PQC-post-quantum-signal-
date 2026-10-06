@@ -13,9 +13,8 @@
 (function () {
   'use strict';
 
-  // Wipe persistent web storage on boot
+  // Wipe session web storage on boot; preserve persistent peer identity pins in localStorage
   try {
-    localStorage.clear();
     sessionStorage.clear();
   } catch (e) {}
 
@@ -300,16 +299,26 @@
     messagesList.classList.remove("hidden");
     btnClearChat.classList.remove("hidden");
 
-    chatInput.disabled = false;
-    btnSendMessage.disabled = false;
-    chatInput.placeholder = "Type an E2EE encrypted message (double ratchet)...";
-    chatInput.focus();
-
     updatePeerIdentityTrustUI();
 
     const pinnedFp = localStorage.getItem("pqc_pinned_fp_" + activePeer);
     const fp = activePeerIdentityPK ? activePeerIdentityPK.fingerprint() : "";
     const isVerified = pinnedFp === fp;
+
+    if (isVerified) {
+      chatInput.disabled = false;
+      btnSendMessage.disabled = false;
+      chatInput.placeholder = "Type an E2EE encrypted message (double ratchet)...";
+      chatInput.focus();
+    } else if (pinnedFp && pinnedFp !== fp) {
+      chatInput.disabled = true;
+      btnSendMessage.disabled = true;
+      chatInput.placeholder = "BLOCKED: Peer identity key mismatch (MitM Alert)";
+    } else {
+      chatInput.disabled = true;
+      btnSendMessage.disabled = true;
+      chatInput.placeholder = "Verify Safety Number out-of-band to unlock chat...";
+    }
 
     // Render Handshake Verification Card in Message Stream
     const notice = document.createElement("div");
@@ -317,11 +326,16 @@
     notice.innerHTML = `
       <strong>Post-Quantum Channel Established (Zero-Trust Blind Relay)</strong><br>
       Hybrid KEM: ML-KEM-768 + X25519 | Signature: ML-DSA-65 | Cipher: ChaCha20-Poly1305<br>
-      Server-Reported Fingerprint: <code>${fp}</code><br>
-      <span style="color: ${isVerified ? '#10b981' : '#f59e0b'}; font-weight: 600;">
-        ${isVerified ? '✓ Identity Verified (Pinned)' : '⚠ Identity Unverified (TOFU) — Click badge or fingerprint to compare Safety Numbers out-of-band to prevent relay server MitM'}
+      Peer Fingerprint: <code>${fp}</code><br>
+      <span style="color: ${isVerified ? '#10b981' : (pinnedFp ? '#ef4444' : '#f59e0b')}; font-weight: 600;">
+        ${isVerified ? '✓ Identity Verified (Pinned)' : (pinnedFp ? '🚨 KEY MISMATCH (MitM Alert) — Outgoing Messages Blocked' : '⚠ Identity Unverified — Out-of-band verification required before sending')}
       </span>
+      ${!isVerified ? '<br><button class="btn-verify-prompt" style="margin-top:8px; padding:6px 14px; background:#10b981; color:#ffffff; border:none; border-radius:6px; font-size:12px; font-weight:600; cursor:pointer;">Verify Safety Number to Unlock Chat</button>' : ''}
     `;
+    const btnPrompt = notice.querySelector(".btn-verify-prompt");
+    if (btnPrompt) {
+      btnPrompt.addEventListener("click", openSafetyModal);
+    }
     messagesList.appendChild(notice);
     scrollToBottom();
   }
@@ -330,6 +344,14 @@
   function sendMessage() {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     if (!ratchetSession || !activePeer) return;
+
+    // Zero-Trust Identity Pinning Guard: Never transmit plaintext under unverified identity
+    const pinnedFp = localStorage.getItem("pqc_pinned_fp_" + activePeer);
+    const fp = activePeerIdentityPK ? activePeerIdentityPK.fingerprint() : "";
+    if (pinnedFp !== fp) {
+      showToast("Transmission blocked: Peer identity must be verified and pinned out-of-band.", true);
+      return;
+    }
 
     const text = chatInput.value.trim();
     if (!text) return;
@@ -637,10 +659,25 @@
   if (btnMarkVerified) {
     btnMarkVerified.addEventListener("click", () => {
       if (!activePeer || !activePeerIdentityPK) return;
-      localStorage.setItem("pqc_pinned_fp_" + activePeer, activePeerIdentityPK.fingerprint());
+      const pinnedFp = localStorage.getItem("pqc_pinned_fp_" + activePeer);
+      const fp = activePeerIdentityPK.fingerprint();
+      if (pinnedFp && pinnedFp !== fp) {
+        if (!confirm("WARNING: The peer identity key does NOT match the previously pinned key. This could indicate an active Man-in-the-Middle attack by the relay. Are you absolutely certain you want to trust and pin this new key?")) {
+          return;
+        }
+      }
+      localStorage.setItem("pqc_pinned_fp_" + activePeer, fp);
       updatePeerIdentityTrustUI();
       if (safetyModal) safetyModal.classList.add("hidden");
       showToast(`Identity for ${activePeer} verified and pinned locally.`);
+
+      // Enable messaging if ratchet session is active
+      if (ratchetSession) {
+        chatInput.disabled = false;
+        btnSendMessage.disabled = false;
+        chatInput.placeholder = "Type an E2EE encrypted message (double ratchet)...";
+        chatInput.focus();
+      }
     });
   }
 

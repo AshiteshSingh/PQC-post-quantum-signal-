@@ -12,12 +12,17 @@ import struct
 import hashlib
 import time
 from typing import Dict, List, Tuple, Optional, Callable, Set, Union
+from pq_ratchet.constants import AEAD_TAG_BYTES
 from pq_ratchet.primitives.identity import (
     IdentityPrivateKey,
     IdentityPublicKey,
 )
 from pq_ratchet.core.ratchet import PQRatchetSession
-from pq_ratchet.core.framing import HandshakeInitPacket
+from pq_ratchet.core.framing import (
+    HandshakeInitPacket,
+    HandshakeRespPacket,
+    RatchetDataPacket,
+)
 from pq_ratchet.transport.session import AsyncPQStreamSession
 
 
@@ -73,6 +78,8 @@ class PQP2PNode:
     3. Forward Secrecy & Post-Compromise Security: direct links and multi-hop overlay routes
        advance post-quantum KEM Double Ratchet state (ML-KEM-768 + ML-DSA-65).
     4. Zero-Trust Relays: intermediate hops are blind forwarders with zero access to plaintext.
+    5. Handshake Replay Resistance: anti-replay ephemeral key caches and staged session promotion
+       eliminate remote session-reset denial-of-service vectors.
     """
     def __init__(
         self,
@@ -98,7 +105,9 @@ class PQP2PNode:
 
         # Multi-hop End-to-End Encryption session stores across relay mesh
         self._e2ee_sessions: Dict[str, PQRatchetSession] = {}
+        self._staged_e2ee_sessions: Dict[str, PQRatchetSession] = {}
         self._pending_e2ee_inits: Dict[str, Tuple[PQRatchetSession, asyncio.Event]] = {}
+        self._seen_handshake_inits: Set[str] = set()
         self._known_pks: Dict[str, IdentityPublicKey] = {}
         for tp in self.trusted_peers:
             self._known_pks[derive_peer_id(tp)] = tp
@@ -143,6 +152,13 @@ class PQP2PNode:
                 pass
         self._e2ee_sessions.clear()
 
+        for peer_id, staged_sess in list(self._staged_e2ee_sessions.items()):
+            try:
+                staged_sess.close()
+            except Exception:
+                pass
+        self._staged_e2ee_sessions.clear()
+
         for peer_id, (pending_sess, event) in list(self._pending_e2ee_inits.items()):
             try:
                 pending_sess.close()
@@ -150,6 +166,7 @@ class PQP2PNode:
                 pass
             event.set()
         self._pending_e2ee_inits.clear()
+        self._seen_handshake_inits.clear()
 
     def register_peer_pk(self, pk: IdentityPublicKey) -> str:
         """
@@ -226,21 +243,42 @@ class PQP2PNode:
         self,
         target_peer_id: str,
         e2ee_payload: bytes,
-        msg_type: int = P2PMessageEnvelope.TYPE_E2EE_RATCHET_DATA,
+        msg_type: int,
         max_hops: int = 3,
     ) -> bool:
         """
         Routes opaque ciphertext across P2P swarm via multi-hop blind relaying.
-        Security Guarantee:
-        Strictly enforces msg_type in {TYPE_E2EE_HANDSHAKE_INIT, TYPE_E2EE_HANDSHAKE_RESP, TYPE_E2EE_RATCHET_DATA}.
-        Rejects unencrypted or application-level plaintext payloads with ValueError.
+        Security Guarantees:
+        1. msg_type MUST be explicitly specified (no insecure default).
+        2. Structurally validates e2ee_payload against cryptographic framing invariants
+           (RatchetDataPacket + AEAD tag, HandshakeInitPacket, or HandshakeRespPacket)
+           to eliminate plaintext relaying under deceptive type headers.
         Complexity: O(k) fanout over k active peer links.
         """
-        if msg_type not in (
-            P2PMessageEnvelope.TYPE_E2EE_HANDSHAKE_INIT,
-            P2PMessageEnvelope.TYPE_E2EE_HANDSHAKE_RESP,
-            P2PMessageEnvelope.TYPE_E2EE_RATCHET_DATA,
-        ):
+        if msg_type == P2PMessageEnvelope.TYPE_E2EE_RATCHET_DATA:
+            try:
+                pkt = RatchetDataPacket.deserialize(e2ee_payload)
+                if len(pkt.ciphertext) < AEAD_TAG_BYTES:
+                    raise ValueError(f"Ciphertext length {len(pkt.ciphertext)} is shorter than AEAD tag ({AEAD_TAG_BYTES} bytes)")
+            except Exception as exc:
+                raise ValueError(
+                    f"Insecure relay rejection: payload is not a valid encrypted RatchetDataPacket ({exc})"
+                ) from exc
+        elif msg_type == P2PMessageEnvelope.TYPE_E2EE_HANDSHAKE_INIT:
+            try:
+                HandshakeInitPacket.deserialize(e2ee_payload)
+            except Exception as exc:
+                raise ValueError(
+                    f"Insecure relay rejection: payload is not a valid HandshakeInitPacket ({exc})"
+                ) from exc
+        elif msg_type == P2PMessageEnvelope.TYPE_E2EE_HANDSHAKE_RESP:
+            try:
+                HandshakeRespPacket.deserialize(e2ee_payload)
+            except Exception as exc:
+                raise ValueError(
+                    f"Insecure relay rejection: payload is not a valid HandshakeRespPacket ({exc})"
+                ) from exc
+        else:
             raise ValueError(
                 f"Insecure relay rejection: payload type 0x{msg_type:02x} is unencrypted. "
                 "Only E2EE handshake or ratcheted ciphertext frames may be relayed."
@@ -577,6 +615,9 @@ class PQP2PNode:
         """
         Processes inbound relayed frame destined for this node.
         Handles E2EE handshake round-trips and ratcheted message decryption.
+        Guarantees:
+        - Handshake Replay Resistance: detects and drops replayed ephemeral KEM keys.
+        - Zero Destructive Reset: staged sessions prevent unconfirmed inits from resetting active state.
         Invariant: Rejects unauthenticated or unencrypted payloads.
         """
         if not origin:
@@ -593,6 +634,16 @@ class PQP2PNode:
                     if not any(sender_id_pk.to_bytes() == tp.to_bytes() for tp in self.trusted_peers):
                         return
 
+                # Anti-Replay Guard: ephemeral KEM PK and signature must never be re-used
+                init_fp = hashlib.sha256(
+                    sender_id_pk.to_bytes() + init_pkt.ephemeral_kem_pk_bytes + init_pkt.signature
+                ).hexdigest()
+                if init_fp in self._seen_handshake_inits:
+                    return
+                if len(self._seen_handshake_inits) > 10000:
+                    self._seen_handshake_inits.clear()
+                self._seen_handshake_inits.add(init_fp)
+
                 if origin in self._pending_e2ee_inits:
                     if self.peer_id < origin:
                         return
@@ -607,9 +658,16 @@ class PQP2PNode:
                     expected_remote_identity=sender_id_pk,
                 )
 
+                # Staging: If an established session already exists with origin, stage
+                # the new session instead of destroying the active session. This guarantees
+                # immunity against replayed or spoofed handshake resets.
                 if origin in self._e2ee_sessions:
-                    self._e2ee_sessions[origin].close()
-                self._e2ee_sessions[origin] = resp_session
+                    if origin in self._staged_e2ee_sessions:
+                        self._staged_e2ee_sessions[origin].close()
+                    self._staged_e2ee_sessions[origin] = resp_session
+                else:
+                    self._e2ee_sessions[origin] = resp_session
+
                 self._known_pks[origin] = sender_id_pk
 
                 await self.send_relayed(
@@ -629,6 +687,8 @@ class PQP2PNode:
                     candidate_session.complete_handshake(raw_payload)
                     if origin in self._e2ee_sessions:
                         self._e2ee_sessions[origin].close()
+                    if origin in self._staged_e2ee_sessions:
+                        self._staged_e2ee_sessions.pop(origin).close()
                     self._e2ee_sessions[origin] = candidate_session
                     hs_event.set()
                 except Exception:
@@ -636,13 +696,27 @@ class PQP2PNode:
             return
 
         if msg_type == P2PMessageEnvelope.TYPE_E2EE_RATCHET_DATA:
-            e2ee_session = self._e2ee_sessions.get(origin)
-            if e2ee_session is None:
-                return
+            plaintext = None
+            active_session = self._e2ee_sessions.get(origin)
+            if active_session is not None:
+                try:
+                    plaintext = active_session.ratchet_decrypt(raw_payload)
+                except Exception:
+                    plaintext = None
 
-            try:
-                plaintext = e2ee_session.ratchet_decrypt(raw_payload)
-            except Exception:
+            if plaintext is None and origin in self._staged_e2ee_sessions:
+                staged_session = self._staged_e2ee_sessions[origin]
+                try:
+                    plaintext = staged_session.ratchet_decrypt(raw_payload)
+                    # Promotion: Staged session successfully authenticated inbound frame
+                    if active_session is not None:
+                        active_session.close()
+                    self._e2ee_sessions[origin] = staged_session
+                    self._staged_e2ee_sessions.pop(origin)
+                except Exception:
+                    plaintext = None
+
+            if plaintext is None:
                 return
 
             if self.on_message_received:
