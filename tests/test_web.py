@@ -11,7 +11,13 @@ Integration test for Ephemeral Post-Quantum Web Chat:
 import unittest
 import json
 from fastapi.testclient import TestClient
-from pq_ratchet.web.app import app, online_users, cleanup_expired_sessions
+from pq_ratchet.web.app import (
+    app,
+    online_users,
+    cleanup_expired_sessions,
+    get_pairing_token,
+    set_pairing_token,
+)
 
 
 class TestEphemeralWebPQRatchet(unittest.TestCase):
@@ -110,15 +116,75 @@ class TestEphemeralWebPQRatchet(unittest.TestCase):
             ) as ws_eve:
                 ws_eve.receive_text()
 
-    def test_file_protocol_opaque_origin_websocket_accepted(self):
-        """Verifies that standalone offline file:// clients (Origin: null) connect successfully."""
+    def test_opaque_origin_without_pairing_token_rejected(self):
+        """
+        P2 Security Invariant:
+        Unauthenticated opaque origins (Origin: null) without a pairing token MUST be rejected.
+        Prevents unauthorized cross-site sandboxed iframes from abusing the relay or squatting handles.
+        """
+        with self.assertRaises(Exception):
+            with self.client.websocket_connect(
+                "/ws/AttackerSandboxed",
+                headers={"origin": "null", "host": "127.0.0.1:8000"},
+            ) as ws:
+                ws.receive_text()
+        self.assertNotIn("AttackerSandboxed", online_users)
+
+    def test_opaque_origin_with_invalid_pairing_token_rejected(self):
+        """Opaque origins providing a forged/incorrect pairing token must be closed immediately."""
+        with self.assertRaises(Exception):
+            with self.client.websocket_connect(
+                "/ws/AttackerBogus?token=invalid_token_12345",
+                headers={"origin": "null", "host": "127.0.0.1:8000"},
+            ) as ws:
+                ws.receive_text()
+        self.assertNotIn("AttackerBogus", online_users)
+
+    def test_opaque_origin_with_valid_pairing_token_accepted(self):
+        """Valid pairing token via query parameter or header permits authorized offline file:// clients."""
+        active_token = get_pairing_token()
+        # 1. Via query parameter (?token=...)
         with self.client.websocket_connect(
-            "/ws/FileUser",
+            f"/ws/FileUserQuery?token={active_token}",
             headers={"origin": "null", "host": "127.0.0.1:8000"},
         ) as ws:
             data = json.loads(ws.receive_text())
             self.assertEqual(data["type"], "session_registered")
-            self.assertEqual(data["username"], "FileUser")
+            self.assertEqual(data["username"], "FileUserQuery")
+
+        # 2. Via x-pairing-token header
+        with self.client.websocket_connect(
+            "/ws/FileUserHeader",
+            headers={"origin": "null", "host": "127.0.0.1:8000", "x-pairing-token": active_token},
+        ) as ws:
+            data = json.loads(ws.receive_text())
+            self.assertEqual(data["type"], "session_registered")
+            self.assertEqual(data["username"], "FileUserHeader")
+
+    def test_pairing_token_api_origin_isolation(self):
+        """
+        Validates that /api/pairing-token endpoint permits same-origin access but strictly
+        forbids opaque origins ('null') and untrusted cross-origin callers.
+        """
+        active_token = get_pairing_token()
+
+        # 1. Same-origin caller succeeds
+        resp_same = self.client.get("/api/pairing-token", headers={"host": "localhost:8000"})
+        self.assertEqual(resp_same.status_code, 200)
+        self.assertEqual(resp_same.json().get("pairing_token"), active_token)
+        self.assertEqual(resp_same.headers.get("cross-origin-resource-policy"), "same-origin")
+
+        # 2. Opaque origin (null) blocked with 403 Forbidden
+        resp_opaque = self.client.get("/api/pairing-token", headers={"origin": "null"})
+        self.assertEqual(resp_opaque.status_code, 403)
+
+        # 3. Malicious cross-origin caller blocked with 403 Forbidden
+        resp_cross = self.client.get("/api/pairing-token", headers={"origin": "https://malicious.com"})
+        self.assertEqual(resp_cross.status_code, 403)
+
+        # 4. Sec-Fetch-Site cross-site request blocked with 403 Forbidden
+        resp_sec = self.client.get("/api/pairing-token", headers={"sec-fetch-site": "cross-site"})
+        self.assertEqual(resp_sec.status_code, 403)
 
     def test_cors_and_corp_headers_for_standalone_clients(self):
         """Verifies CORS and CORP headers permit cross-origin directory fetching from file:// and external origins."""

@@ -44,13 +44,28 @@
   const inputUsername = document.getElementById("input-username");
   const inputPassphrase = document.getElementById("input-passphrase");
   const inputRelayUrl = document.getElementById("input-relay-url");
+  const inputPairingToken = document.getElementById("input-pairing-token");
   const btnJoinText = document.getElementById("btn-join-text");
   let configuredRelayHost = "";
 
-  // Prepopulate custom relay endpoint if specified in URL query parameter or localStorage
+  // Prepopulate custom relay endpoint and pairing token if specified in URL query parameter or localStorage
   const initialRelayParam = new URLSearchParams(window.location.search).get("relay") || localStorage.getItem("pqc_custom_relay") || "";
   if (inputRelayUrl && initialRelayParam) {
     inputRelayUrl.value = initialRelayParam;
+  }
+  const initialTokenParam = new URLSearchParams(window.location.search).get("token") || new URLSearchParams(window.location.search).get("pairing_token") || localStorage.getItem("pqc_pairing_token") || "";
+  if (inputPairingToken && initialTokenParam) {
+    inputPairingToken.value = initialTokenParam;
+  }
+  if (window.location.protocol !== "file:" && inputPairingToken && !inputPairingToken.value) {
+    fetch("/api/pairing-token")
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (d && d.pairing_token && inputPairingToken && !inputPairingToken.value) {
+          inputPairingToken.value = d.pairing_token;
+        }
+      })
+      .catch(() => {});
   }
 
   const headerAvatar = document.getElementById("header-avatar");
@@ -159,6 +174,7 @@
   // Step 2: Establish Blind WebSocket Relay Connection
   function connectWebSocket(username) {
     let customRelay = (inputRelayUrl && inputRelayUrl.value.trim()) || new URLSearchParams(window.location.search).get("relay") || localStorage.getItem("pqc_custom_relay") || "";
+    let pairingToken = (inputPairingToken && inputPairingToken.value.trim()) || new URLSearchParams(window.location.search).get("token") || new URLSearchParams(window.location.search).get("pairing_token") || localStorage.getItem("pqc_pairing_token") || "";
     let wsUrl;
     if (customRelay) {
       localStorage.setItem("pqc_custom_relay", customRelay);
@@ -177,6 +193,12 @@
       // Local standalone file:// mode default
       wsUrl = `ws://127.0.0.1:8000/ws/${encodeURIComponent(username)}`;
       configuredRelayHost = "http://127.0.0.1:8000";
+    }
+
+    if (pairingToken) {
+      localStorage.setItem("pqc_pairing_token", pairingToken);
+      const sep = wsUrl.includes("?") ? "&" : "?";
+      wsUrl = `${wsUrl}${sep}token=${encodeURIComponent(pairingToken)}`;
     }
 
     ws = new WebSocket(wsUrl);

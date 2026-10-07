@@ -1,27 +1,27 @@
 {
   "version": "1.0.0",
-  "threat_model": "Zero-Trust Host Verification (Protection against Malicious/Compromised Web Host)",
-  "description": "Cryptographic hashes of client-side web application assets. Independent clients verify these digests prior to execution to prevent trojanized code substitution attacks.",
+  "timestamp": 1775560000,
+  "description": "Cryptographically pinned and authenticated client web assets for PQ-Ratchet",
   "files": {
-    "index.html": {
-      "bytes": 9570,
-      "sha256": "7eab3770eed4256831d592465de0b78e0e0d54be8570107ba65e04c8c41d8af4",
-      "sri_sha384": "sha384-B+ejnz54OBUtAR6VWD3WzQqkNSlAbvVdR0xlarcR2Le0pHaE0LNBZupIU2xWTmwu"
+    "app.js": {
+      "sha256": "429eba4252e90f91ea54aa6703a8bb7a256a018290c0216bc8bbb7b33cc40dc2",
+      "sri_sha384": "sha384-yaOjCnEwZ+0GKK5LlGDIOqO4tImwg4T98Xwb6R+QoK/hoaYv17/g1NnqnaXoINhY",
+      "bytes": 31317
     },
-    "style.css": {
-      "bytes": 11442,
-      "sha256": "f98fe711f6c32b959e7f3352ef34c9895a2fc1ac5b2ae324af4f833e5785b4ad",
-      "sri_sha384": "sha384-2CC+P4Qsdr9YpOmmWleJeH+uMHiXDPR6MS8289gkiIa6pkXwsICaMxFJeII2zp7D"
+    "index.html": {
+      "sha256": "8fc1b6c861bda20e25ade7a383eacbe3d775e74088401fbdfe5f09de3517c8be",
+      "sri_sha384": "sha384-L4IQu470tCiEYnE0rBPDW26iUfv5DA8H9lTHcpKgVoj4+MCetIGJz6Oij+Zes7R/",
+      "bytes": 9812
     },
     "pq-crypto.bundle.js": {
-      "bytes": 202482,
       "sha256": "4f988e3ce7583b871e121f4e902c47cb4a3134420bc5f6ab3d3577bb4ef391b4",
-      "sri_sha384": "sha384-/jQXqAAJLZ1n5I8SwKDlF0A8PmfRKpQ1DOZe1JwDpwrjqYcgskqTSz7tbiueopMP"
+      "sri_sha384": "sha384-/jQXqAAJLZ1n5I8SwKDlF0A8PmfRKpQ1DOZe1JwDpwrjqYcgskqTSz7tbiueopMP",
+      "bytes": 202482
     },
-    "app.js": {
-      "bytes": 30070,
-      "sha256": "f7804a2ce52fdd9221f00b86896618136ea26042ce3ece1527308e936d4acc74",
-      "sri_sha384": "sha384-4HNw3bhPaR1ICzSC3S5KiMZZDkUCofr35h6HWVUWxcT3BiEf05vK3mD6u+1VIfJL"
+    "style.css": {
+      "sha256": "f98fe711f6c32b959e7f3352ef34c9895a2fc1ac5b2ae324af4f833e5785b4ad",
+      "sri_sha384": "sha384-2CC+P4Qsdr9YpOmmWleJeH+uMHiXDPR6MS8289gkiIa6pkXwsICaMxFJeII2zp7D",
+      "bytes": 11442
     }
   }
 }

@@ -16,8 +16,10 @@ import re
 import json
 import time
 import asyncio
+import secrets
+import hmac
 from typing import Dict, Optional
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -34,6 +36,32 @@ SESSION_TTL_SECONDS = 3600  # Strict 1-Hour Ephemeral Lifetime
 MAX_CONCURRENT_USERS = 256  # Hard memory allocation ceiling
 MAX_PAYLOAD_BYTES = 32768   # 32 KiB strict DoS payload ceiling
 
+# Cryptographically secure pairing token required for opaque origins (file://, sandboxed iframes).
+# Eliminates unauthorized cross-site sandboxed documents from abusing the relay or squatting handles.
+DEFAULT_PAIRING_TOKEN: str = os.environ.get("PQC_PAIRING_TOKEN", "")
+_active_pairing_token: str = DEFAULT_PAIRING_TOKEN or secrets.token_urlsafe(16)
+
+
+def get_pairing_token() -> str:
+    """Returns active pairing token used to authenticate opaque origins."""
+    return _active_pairing_token
+
+
+def set_pairing_token(token: str) -> None:
+    """Configures the active pairing token."""
+    global _active_pairing_token
+    _active_pairing_token = token
+
+
+def verify_pairing_token(provided_token: Optional[str]) -> bool:
+    """
+    Validates provided token against active pairing token in constant time.
+    Mitigates timing side-channels and rejects unauthenticated opaque origin frames.
+    """
+    if not provided_token or not _active_pairing_token:
+        return False
+    return hmac.compare_digest(provided_token.strip(), _active_pairing_token.strip())
+
 
 class ZeroTraceMiddleware(BaseHTTPMiddleware):
     """
@@ -47,6 +75,8 @@ class ZeroTraceMiddleware(BaseHTTPMiddleware):
 
         # Handle CORS preflight requests for cross-origin and standalone file:// clients
         if request.method == "OPTIONS":
+            if request.url.path == "/api/pairing-token":
+                return Response(status_code=403)
             preflight = Response(status_code=200)
             preflight.headers["Access-Control-Allow-Origin"] = "*"
             preflight.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
@@ -80,10 +110,13 @@ class ZeroTraceMiddleware(BaseHTTPMiddleware):
         )
 
         # Decoupled Standalone Client CORS & CORP (supports file:// and external origins)
-        response.headers["Access-Control-Allow-Origin"] = "*"
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-        response.headers["Access-Control-Allow-Headers"] = "*"
-        response.headers["Cross-Origin-Resource-Policy"] = "cross-origin"
+        if request.url.path == "/api/pairing-token":
+            response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+        else:
+            response.headers["Access-Control-Allow-Origin"] = "*"
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+            response.headers["Access-Control-Allow-Headers"] = "*"
+            response.headers["Cross-Origin-Resource-Policy"] = "cross-origin"
 
         # Transport & Execution Environment Isolation
         response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains; preload"
@@ -211,6 +244,33 @@ async def list_online_users():
     return JSONResponse({"users": users_info})
 
 
+@app.get("/api/pairing-token")
+async def get_relay_pairing_token(request: Request):
+    """
+    Returns active pairing token to same-origin callers only.
+    Strictly forbids opaque origins ('null') and cross-origin callers with 403 Forbidden.
+    """
+    sec_site = request.headers.get("sec-fetch-site")
+    if sec_site and sec_site.lower() == "cross-site":
+        return JSONResponse({"error": "Cross-site access forbidden"}, status_code=403)
+    origin = request.headers.get("origin")
+    host = request.headers.get("host")
+    if origin:
+        origin_lower = origin.strip().lower()
+        if origin_lower == "null":
+            return JSONResponse({"error": "Opaque origin cannot read pairing token"}, status_code=403)
+        parsed_origin = urlparse(origin).netloc.lower()
+        allowed = {"localhost", "127.0.0.1", "testserver"}
+        if host:
+            allowed.add(host.lower())
+            if ":" in host:
+                allowed.add(host.split(":")[0].lower())
+        origin_host = parsed_origin.split(":")[0].lower() if ":" in parsed_origin else parsed_origin
+        if parsed_origin not in allowed and origin_host not in allowed:
+            return JSONResponse({"error": "Cross-origin access forbidden"}, status_code=403)
+    return JSONResponse({"pairing_token": get_pairing_token()})
+
+
 async def safe_send_json(ws: WebSocket, payload: dict) -> bool:
     """Safely dispatches JSON payload, mitigating socket crash cascading."""
     try:
@@ -225,14 +285,23 @@ USERNAME_REGEX = re.compile(r"^[a-zA-Z0-9_-]{2,25}$")
 
 @app.websocket("/ws/{username}")
 async def websocket_endpoint(websocket: WebSocket, username: str):
-    # Cross-Site WebSocket Hijacking (CSWSH) Mitigation
+    # Cross-Site WebSocket Hijacking (CSWSH) & Opaque Origin Mitigation
     origin = websocket.headers.get("origin")
     host = websocket.headers.get("host")
     if origin:
         origin_lower = origin.strip().lower()
         if origin_lower == "null":
-            # Opaque origin sent by browsers for local offline file:// execution and sandboxed contexts
-            pass
+            # Opaque origin sent by browsers for local offline file:// execution and sandboxed contexts.
+            # Enforce pairing token authentication to prevent unauthorized cross-site sandboxed frames
+            # from opening relay sessions, exhausting capacity, or squatting usernames.
+            token = (
+                websocket.query_params.get("token")
+                or websocket.query_params.get("pairing_token")
+                or websocket.headers.get("x-pairing-token")
+            )
+            if not verify_pairing_token(token):
+                await websocket.close(code=1008)
+                return
         else:
             parsed_origin = urlparse(origin).netloc.lower()
             allowed = {"localhost", "127.0.0.1", "testserver"}

@@ -519,6 +519,7 @@ def main():
     p_web.add_argument("--ssl-keyfile", default=None, help="SSL private key file path for HTTPS / WSS")
     p_web.add_argument("--ssl-certfile", default=None, help="SSL certificate file path for HTTPS / WSS")
     p_web.add_argument("--tls", action="store_true", help="Generate ephemeral self-signed TLS cert for instant HTTPS/WSS")
+    p_web.add_argument("--pairing-token", default=None, help="Pairing token for authenticating opaque/file:// origins")
 
     args = parser.parse_args()
 
@@ -606,9 +607,16 @@ def main():
             ssl_keyfile = key_p
             print("[+] Generated ephemeral zero-trace TLS certificate for HTTPS/WSS encryption.")
 
+        if args.pairing_token:
+            from pq_ratchet.web.app import set_pairing_token
+            set_pairing_token(args.pairing_token)
+        from pq_ratchet.web.app import get_pairing_token
+        ptoken = get_pairing_token()
+
         proto = "https" if ssl_certfile else "http"
         print(f"\n[+] Launching Post-Quantum Secure Web Chat at {proto}://localhost:{args.port}")
-        print(f"[+] Zero IP retention, zero disk storage, 1-hour ephemeral registry.\n")
+        print(f"[+] Zero IP retention, zero disk storage, 1-hour ephemeral registry.")
+        print(f"[+] Pairing Token for opaque/file:// origins: {ptoken}\n")
 
         uvicorn.run(
             app,
