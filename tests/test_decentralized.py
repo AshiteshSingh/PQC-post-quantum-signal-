@@ -325,33 +325,86 @@ class TestDecentralizedTransport(unittest.IsolatedAsyncioTestCase):
         decrypted = bob_real_session.ratchet_decrypt(ciphertext)
         self.assertEqual(decrypted, test_msg)
 
-    async def test_send_relayed_entropy_and_plaintext_rejection(self):
+    async def test_send_relayed_admits_valid_short_ciphertext(self):
         """
-        Validates that send_relayed() actively detects and rejects a RatchetDataPacket
-        whose ciphertext field contains unencrypted plaintext instead of genuine AEAD ciphertext.
+        Validates that send_relayed() permits legitimate short AEAD ciphertexts
+        (e.g., 1-byte, 4-byte payloads whose Poly1305 AEAD ciphertext is < 32 bytes)
+        without false rejections from arbitrary entropy or printable byte heuristics.
         """
         node_a_sk = IdentityPrivateKey.generate()
-        node_a = PQP2PNode(local_identity=node_a_sk, trusted_peers=[], listen_host="127.0.0.1", listen_port=19231)
+        node_b_sk = IdentityPrivateKey.generate()
+        node_a = PQP2PNode(local_identity=node_a_sk, trusted_peers=[], listen_host="127.0.0.1", listen_port=19241)
+        node_b = PQP2PNode(local_identity=node_b_sk, trusted_peers=[], listen_host="127.0.0.1", listen_port=19242)
+        import unittest.mock
+        node_a._peers["mock_peer"] = unittest.mock.AsyncMock()
 
-        # Construct a structurally valid RatchetDataPacket wrapping raw ASCII plaintext
-        raw_plaintext = b"This is a plaintext message of length 58B packed directly."
-        fake_pkt = RatchetDataPacket(
-            epoch=0,
-            seq=0,
-            kem_ct=None,
-            next_kem_pk=None,
-            ciphertext=raw_plaintext,
-        )
-        fake_payload = fake_pkt.serialize()
+        # Establish direct ratchet session between Alice and Bob
+        alice_session, init_bytes = PQRatchetSession.initiate_handshake(node_a_sk, node_b_sk.public_key())
+        bob_session, resp_bytes = PQRatchetSession.respond_handshake(node_b_sk, init_bytes, node_a_sk.public_key())
+        alice_session.complete_handshake(resp_bytes)
 
-        # Invariant: send_relayed rejects the frame due to low entropy and plaintext characteristics
-        with self.assertRaises(ValueError) as ctx:
-            await node_a.send_relayed(
-                target_peer_id="pqc_targetpeer",
-                e2ee_payload=fake_payload,
+        # Short plaintexts: 1 byte, 4 bytes, 2 bytes (producing 17, 20, 18 byte ciphertexts)
+        for short_msg in [b"A", b"PING", b"OK"]:
+            short_ct_pkt = alice_session.ratchet_encrypt(short_msg)
+            # send_relayed must admit legitimate short ciphertext
+            admitted = await node_a.send_relayed(
+                target_peer_id=node_b.peer_id,
+                e2ee_payload=short_ct_pkt,
                 msg_type=P2PMessageEnvelope.TYPE_E2EE_RATCHET_DATA,
             )
-        self.assertIn("plaintext characteristics", str(ctx.exception))
+            self.assertTrue(admitted)
+
+            # Receiver endpoint successfully decrypts and validates AEAD tag
+            decrypted = bob_session.ratchet_decrypt(short_ct_pkt)
+            self.assertEqual(decrypted, short_msg)
+
+    async def test_high_entropy_plaintext_boundary_enforcement(self):
+        """
+        Validates that the cryptographic security boundary resides exclusively at endpoint
+        AEAD authentication (ratchet_decrypt) rather than transport heuristic checks.
+        High-entropy unauthenticated payloads satisfy transport framing syntax, but are
+        unfailingly rejected with MAC verification failure at the recipient ratchet endpoint.
+        """
+        import os
+        import unittest.mock
+        node_a_sk = IdentityPrivateKey.generate()
+        node_b_sk = IdentityPrivateKey.generate()
+        node_a = PQP2PNode(local_identity=node_a_sk, trusted_peers=[], listen_host="127.0.0.1", listen_port=19243)
+        node_b = PQP2PNode(local_identity=node_b_sk, trusted_peers=[], listen_host="127.0.0.1", listen_port=19244)
+        node_a._peers["mock_peer"] = unittest.mock.AsyncMock()
+
+        alice_session, init_bytes = PQRatchetSession.initiate_handshake(node_a_sk, node_b_sk.public_key())
+        bob_session, resp_bytes = PQRatchetSession.respond_handshake(node_b_sk, init_bytes, node_a_sk.public_key())
+        alice_session.complete_handshake(resp_bytes)
+
+        # Genuine initial message establishes Bob's receiving symmetric chain
+        init_msg = alice_session.ratchet_encrypt(b"Handshake channel confirmation")
+        self.assertEqual(bob_session.ratchet_decrypt(init_msg), b"Handshake channel confirmation")
+
+        # Synthesize a high-entropy unauthenticated payload (64 bytes of cryptographically random bytes)
+        high_entropy_payload = os.urandom(64)
+        fake_pkt = RatchetDataPacket(
+            epoch=bob_session.state.epoch,
+            seq=bob_session.state.receiving_seq,
+            kem_ct=None,
+            next_kem_pk=None,
+            ciphertext=high_entropy_payload,
+        )
+        fake_wire_bytes = fake_pkt.serialize()
+
+        # Transport framing admits the syntactically valid envelope
+        admitted = await node_a.send_relayed(
+            target_peer_id=node_b.peer_id,
+            e2ee_payload=fake_wire_bytes,
+            msg_type=P2PMessageEnvelope.TYPE_E2EE_RATCHET_DATA,
+        )
+        self.assertTrue(admitted)
+
+        # True cryptographic security boundary: Recipient endpoint unfailingly rejects
+        # the unauthenticated payload under ChaCha20-Poly1305 MAC tag verification
+        with self.assertRaises(ValueError) as ctx:
+            bob_session.ratchet_decrypt(fake_wire_bytes)
+        self.assertIn("invalid AEAD tag", str(ctx.exception))
 
     async def test_multi_node_bootstrap_distinct_keys(self):
         """
@@ -438,39 +491,39 @@ class TestDecentralizedTransport(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(p, 8080)
         self.assertIsNone(k)
 
-    async def test_send_relayed_short_plaintext_rejection_under_32_bytes(self):
+    async def test_send_relayed_framing_rejection_sub_tag_ciphertext(self):
         """
-        Validates that send_relayed() rejects unencrypted plaintexts even when
-        the ciphertext length is under 32 bytes (eliminating the <32B bypass).
+        Validates that send_relayed() enforces protocol framing syntax by rejecting
+        RatchetDataPackets whose ciphertext length is strictly less than AEAD_TAG_BYTES (16B).
         """
         from pq_ratchet.core.framing import RatchetDataPacket
+        from pq_ratchet.constants import AEAD_TAG_BYTES
         from pq_ratchet.transport.p2p import P2PMessageEnvelope
 
         node_a_sk = IdentityPrivateKey.generate()
         node_a = PQP2PNode(local_identity=node_a_sk, trusted_peers=[], listen_host="127.0.0.1", listen_port=19239)
 
-        # 24-byte plaintext (< 32 bytes, but >= AEAD_TAG_BYTES)
-        short_plaintext = b"ShortASCIISecretText123!"
-        self.assertLess(len(short_plaintext), 32)
-        self.assertGreaterEqual(len(short_plaintext), 16)
+        # 8-byte ciphertext (< AEAD_TAG_BYTES of 16)
+        sub_tag_ciphertext = b"12345678"
+        self.assertLess(len(sub_tag_ciphertext), AEAD_TAG_BYTES)
 
         fake_pkt = RatchetDataPacket(
             epoch=0,
             seq=0,
             kem_ct=None,
             next_kem_pk=None,
-            ciphertext=short_plaintext,
+            ciphertext=sub_tag_ciphertext,
         )
         fake_payload = fake_pkt.serialize()
 
-        # Invariant: Must be rejected as plaintext characteristics despite len < 32
+        # Invariant: Must be rejected at transport framing validation
         with self.assertRaises(ValueError) as ctx:
             await node_a.send_relayed(
                 target_peer_id="pqc_targetpeer",
                 e2ee_payload=fake_payload,
                 msg_type=P2PMessageEnvelope.TYPE_E2EE_RATCHET_DATA,
             )
-        self.assertIn("plaintext characteristics", str(ctx.exception))
+        self.assertIn("shorter than AEAD tag", str(ctx.exception))
 
 
 if __name__ == "__main__":

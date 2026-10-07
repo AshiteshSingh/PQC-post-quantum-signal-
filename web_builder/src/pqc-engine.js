@@ -276,6 +276,18 @@ export const PBKDF2_ROUNDS = 600000; // Hardened fallback rounds
 export const IDENTITY_SALT_BYTES = 32;
 export const ENCRYPTION_NONCE_BYTES = 12;
 
+// Explicit application-level parameter bounds and resource limits to guard against DoS
+export const MIN_SCRYPT_N = 1024;
+export const MAX_SCRYPT_N = 65536;
+export const MIN_SCRYPT_R = 1;
+export const MAX_SCRYPT_R = 8;
+export const MIN_SCRYPT_P = 1;
+export const MAX_SCRYPT_P = 2;
+export const MAX_SCRYPT_MEMORY_BYTES = 70 * 1024 * 1024; // ~70 MiB boundary (covering 64 MiB scrypt matrix plus RFC 7914 buffer overhead: 128 * r * (N + p + 1))
+
+export const MIN_PBKDF2_ROUNDS = 100000;
+export const MAX_PBKDF2_ROUNDS = 600000;
+
 export function encryptIdentityKey(identityKey, passphrase) {
   const salt = globalThis.crypto.getRandomValues(new Uint8Array(IDENTITY_SALT_BYTES));
   const nonce = globalThis.crypto.getRandomValues(new Uint8Array(ENCRYPTION_NONCE_BYTES));
@@ -283,7 +295,7 @@ export function encryptIdentityKey(identityKey, passphrase) {
   let derivedKey = null;
   let rawKeyBytes = null;
   try {
-    derivedKey = scrypt(passBytes, salt, { N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P, dkLen: SYMMETRIC_KEY_BYTES });
+    derivedKey = scrypt(passBytes, salt, { N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P, dkLen: SYMMETRIC_KEY_BYTES, maxmem: MAX_SCRYPT_MEMORY_BYTES });
     const cipher = chacha20poly1305(derivedKey, nonce);
     rawKeyBytes = identityKey.toBytes();
     const ciphertext = cipher.encrypt(rawKeyBytes);
@@ -305,6 +317,47 @@ export function encryptIdentityKey(identityKey, passphrase) {
 }
 
 export function decryptIdentityKey(encryptedEnvelope, passphrase) {
+  if (!encryptedEnvelope || typeof encryptedEnvelope !== 'object') {
+    throw new Error("Invalid encrypted envelope: non-null object required.");
+  }
+  if (!encryptedEnvelope.salt || !encryptedEnvelope.nonce || !encryptedEnvelope.ciphertext) {
+    throw new Error("Invalid encrypted envelope: missing required fields (salt, nonce, ciphertext).");
+  }
+
+  // Determine KDF type and enforce application-level parameter limits
+  const kdf = encryptedEnvelope.kdf || (encryptedEnvelope.N ? 'scrypt' : 'pbkdf2');
+  let N = SCRYPT_N;
+  let r = SCRYPT_R;
+  let p = SCRYPT_P;
+  let rounds = PBKDF2_ROUNDS;
+
+  if (kdf === 'scrypt') {
+    N = encryptedEnvelope.N !== undefined ? encryptedEnvelope.N : SCRYPT_N;
+    r = encryptedEnvelope.r !== undefined ? encryptedEnvelope.r : SCRYPT_R;
+    p = encryptedEnvelope.p !== undefined ? encryptedEnvelope.p : SCRYPT_P;
+
+    if (!Number.isInteger(N) || N < MIN_SCRYPT_N || N > MAX_SCRYPT_N || (N & (N - 1)) !== 0) {
+      throw new Error(`Unsupported or out-of-bounds scrypt N parameter: ${N}. Must be a power of 2 in [${MIN_SCRYPT_N}, ${MAX_SCRYPT_N}].`);
+    }
+    if (!Number.isInteger(r) || r < MIN_SCRYPT_R || r > MAX_SCRYPT_R) {
+      throw new Error(`Unsupported or out-of-bounds scrypt r parameter: ${r}. Must be an integer in [${MIN_SCRYPT_R}, ${MAX_SCRYPT_R}].`);
+    }
+    if (!Number.isInteger(p) || p < MIN_SCRYPT_P || p > MAX_SCRYPT_P) {
+      throw new Error(`Unsupported or out-of-bounds scrypt p parameter: ${p}. Must be an integer in [${MIN_SCRYPT_P}, ${MAX_SCRYPT_P}].`);
+    }
+    const memReq = 128 * r * (N + p + 1);
+    if (memReq > MAX_SCRYPT_MEMORY_BYTES) {
+      throw new Error(`Scrypt memory requirement (${memReq} bytes) exceeds explicit work/memory limit (${MAX_SCRYPT_MEMORY_BYTES} bytes).`);
+    }
+  } else if (kdf === 'pbkdf2') {
+    rounds = encryptedEnvelope.rounds !== undefined ? encryptedEnvelope.rounds : PBKDF2_ROUNDS;
+    if (!Number.isInteger(rounds) || rounds < MIN_PBKDF2_ROUNDS || rounds > MAX_PBKDF2_ROUNDS) {
+      throw new Error(`Unsupported or out-of-bounds PBKDF2 rounds: ${rounds}. Must be an integer in [${MIN_PBKDF2_ROUNDS}, ${MAX_PBKDF2_ROUNDS}].`);
+    }
+  } else {
+    throw new Error(`Unsupported KDF algorithm: ${kdf}. Allowed algorithms: 'scrypt', 'pbkdf2'.`);
+  }
+
   const salt = base64ToBytes(encryptedEnvelope.salt);
   const nonce = base64ToBytes(encryptedEnvelope.nonce);
   const ciphertext = base64ToBytes(encryptedEnvelope.ciphertext);
@@ -312,13 +365,9 @@ export function decryptIdentityKey(encryptedEnvelope, passphrase) {
   let derivedKey = null;
   let rawKeyBytes = null;
   try {
-    if (encryptedEnvelope.kdf === 'scrypt' || (!encryptedEnvelope.kdf && encryptedEnvelope.N)) {
-      const N = encryptedEnvelope.N || SCRYPT_N;
-      const r = encryptedEnvelope.r || SCRYPT_R;
-      const p = encryptedEnvelope.p || SCRYPT_P;
-      derivedKey = scrypt(passBytes, salt, { N, r, p, dkLen: SYMMETRIC_KEY_BYTES });
+    if (kdf === 'scrypt') {
+      derivedKey = scrypt(passBytes, salt, { N, r, p, dkLen: SYMMETRIC_KEY_BYTES, maxmem: MAX_SCRYPT_MEMORY_BYTES });
     } else {
-      const rounds = encryptedEnvelope.rounds || PBKDF2_ROUNDS;
       derivedKey = pbkdf2(sha3_512, passBytes, salt, { c: rounds, dkLen: SYMMETRIC_KEY_BYTES });
     }
     const cipher = chacha20poly1305(derivedKey, nonce);
@@ -1046,6 +1095,19 @@ if (typeof window !== 'undefined') {
       DOMAIN_AUTH_INITIATOR,
       DOMAIN_AUTH_RESPONDER,
       MAX_RATCHET_SKIP_GAP,
+      SCRYPT_N,
+      SCRYPT_R,
+      SCRYPT_P,
+      MIN_SCRYPT_N,
+      MAX_SCRYPT_N,
+      MIN_SCRYPT_R,
+      MAX_SCRYPT_R,
+      MIN_SCRYPT_P,
+      MAX_SCRYPT_P,
+      MAX_SCRYPT_MEMORY_BYTES,
+      PBKDF2_ROUNDS,
+      MIN_PBKDF2_ROUNDS,
+      MAX_PBKDF2_ROUNDS,
     }
   };
 }

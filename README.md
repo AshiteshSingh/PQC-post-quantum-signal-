@@ -211,10 +211,10 @@ Eliminates central relay servers completely. Nodes form an autonomous mesh with 
 
 ```bash
 # Start a decentralized P2P routing node
-$ pq-ratchet p2p node --key node.key --listen 0.0.0.0:9100 --bootstrap 192.168.1.10:9100
+$ pq-ratchet p2p node --key node.key --peer-pub peer1.pub --listen 0.0.0.0:9100 --bootstrap 192.168.1.10:9100:peer1.pub
 
 # Chat directly with any peer in the swarm using their self-authenticating PeerID
-$ pq-ratchet p2p chat --key client.key --target-peer pqc_9a4f82b7... --bootstrap 192.168.1.10:9100
+$ pq-ratchet p2p chat --key client.key --peer-pub peer1.pub --target-peer pqc_9a4f82b7... --bootstrap 192.168.1.10:9100:peer1.pub
 ```
 
 ### 6. Tor v3 Onion Service Hosting (100% Free Decentralized Web / Transport)

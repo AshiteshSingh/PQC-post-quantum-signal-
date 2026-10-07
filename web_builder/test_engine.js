@@ -1,7 +1,9 @@
 import {
   IdentityPrivateKey,
   PQRatchetSession,
-  RatchetDataPacket
+  RatchetDataPacket,
+  encryptIdentityKey,
+  decryptIdentityKey,
 } from './src/pqc-engine.js';
 
 console.log('[*] Testing PQC Engine Full Double Ratchet Handshake & Messaging...');
@@ -69,4 +71,85 @@ try {
 }
 if (!tamperDetected) throw new Error("Tamper detection failed!");
 
-console.log('\n[=== ALL PQC ENGINE DOUBLE RATCHET TESTS PASSED ===]');
+// 7. Test Identity Key Passphrase KDF Encryption & Decryption
+console.log('\n[*] Testing Identity Key Passphrase Encryption & Decryption...');
+const testPass = "HardenedMasterPassphrase123!";
+const encryptedEnv = encryptIdentityKey(aliceId, testPass);
+console.log('[+] Identity key encrypted under scrypt envelope. KDF:', encryptedEnv.kdf, 'N:', encryptedEnv.N);
+
+const decryptedAliceId = decryptIdentityKey(encryptedEnv, testPass);
+if (decryptedAliceId.publicKey().fingerprint() !== aliceId.publicKey().fingerprint()) {
+  throw new Error("Decrypted identity key fingerprint mismatch!");
+}
+console.log('[+] Decrypted identity key verified:', decryptedAliceId.publicKey().fingerprint());
+
+// Wrong passphrase rejection
+let wrongPassDetected = false;
+try {
+  decryptIdentityKey(encryptedEnv, "WrongPassword!");
+} catch (e) {
+  wrongPassDetected = true;
+  console.log('[+] Incorrect passphrase rejected as expected:', e.message);
+}
+if (!wrongPassDetected) throw new Error("Incorrect passphrase was not rejected!");
+
+// 8. Test KDF Parameter Bounds & DoS Limits (Finding 1)
+console.log('\n[*] Testing KDF Parameter Bounds & DoS Guard Limits...');
+
+// Test excessive scrypt N rejection
+const excessiveNEnv = { ...encryptedEnv, N: 1048576 }; // 2^20 (1 GiB)
+let dosNDetected = false;
+try {
+  decryptIdentityKey(excessiveNEnv, testPass);
+} catch (e) {
+  dosNDetected = true;
+  console.log('[+] Out-of-bounds scrypt N rejected immediately without CPU burn:', e.message);
+}
+if (!dosNDetected) throw new Error("Excessive scrypt N was not rejected!");
+
+// Test non-power-of-two scrypt N rejection
+const invalidNEnv = { ...encryptedEnv, N: 65535 };
+let invalidNDetected = false;
+try {
+  decryptIdentityKey(invalidNEnv, testPass);
+} catch (e) {
+  invalidNDetected = true;
+  console.log('[+] Non-power-of-two scrypt N rejected:', e.message);
+}
+if (!invalidNDetected) throw new Error("Non-power-of-two N was not rejected!");
+
+// Test excessive memory cost rejection (N=65536, r=8 -> 64MB ok, but r=16 -> 128MB exceeds 64MB limit)
+const excessiveMemEnv = { ...encryptedEnv, N: 65536, r: 16 };
+let dosMemDetected = false;
+try {
+  decryptIdentityKey(excessiveMemEnv, testPass);
+} catch (e) {
+  dosMemDetected = true;
+  console.log('[+] Memory limit breach rejected:', e.message);
+}
+if (!dosMemDetected) throw new Error("Excessive memory cost was not rejected!");
+
+// Test excessive PBKDF2 rounds rejection
+const excessiveRoundsEnv = { ...encryptedEnv, kdf: 'pbkdf2', rounds: 10000000 };
+let dosRoundsDetected = false;
+try {
+  decryptIdentityKey(excessiveRoundsEnv, testPass);
+} catch (e) {
+  dosRoundsDetected = true;
+  console.log('[+] Excessive PBKDF2 rounds rejected immediately:', e.message);
+}
+if (!dosRoundsDetected) throw new Error("Excessive PBKDF2 rounds was not rejected!");
+
+// Test unsupported KDF algorithm rejection
+const unsupportedKdfEnv = { ...encryptedEnv, kdf: 'unknown_kdf_algo' };
+let unsupportedKdfDetected = false;
+try {
+  decryptIdentityKey(unsupportedKdfEnv, testPass);
+} catch (e) {
+  unsupportedKdfDetected = true;
+  console.log('[+] Unsupported KDF algorithm rejected:', e.message);
+}
+if (!unsupportedKdfDetected) throw new Error("Unsupported KDF algorithm was not rejected!");
+
+console.log('\n[=== ALL PQC ENGINE DOUBLE RATCHET & KDF TESTS PASSED ===]');
+

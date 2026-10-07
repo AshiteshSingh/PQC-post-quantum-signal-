@@ -36,19 +36,6 @@ def derive_peer_id(pk: IdentityPublicKey) -> str:
     return f"pqc_{digest[:32]}"
 
 
-def _calculate_shannon_entropy(data: bytes) -> float:
-    """
-    Computes Shannon entropy in bits per byte: H = -sum(p * log2(p)).
-    Complexity: O(N) where N = len(data).
-    """
-    if not data:
-        return 0.0
-    import math
-    counts: Dict[int, int] = {}
-    for b in data:
-        counts[b] = counts.get(b, 0) + 1
-    total = len(data)
-    return -sum((c / total) * math.log2(c / total) for c in counts.values())
 
 
 class P2PMessageEnvelope:
@@ -265,13 +252,23 @@ class PQP2PNode:
         Routes opaque ciphertext across P2P swarm via multi-hop blind relaying.
 
         Operational & Security Specification:
-        1. Low-level wire routing primitive: Enforces strict syntactic cryptographic framing
-           (FIPS 203/204 Handshake packets, or Double Ratchet wire framing) and statistical entropy
-           verification to eliminate unencapsulated or framed application plaintexts.
-        2. Threat & Confidentiality Boundary: Because intermediate blind relays do not possess
-           the end-to-end symmetric ratchet keys, mathematical IND-CCA2 confidentiality and
-           EUF-CMA integrity are enforced at the session layer. Application callers MUST use
-           `send_message_to_peer()` / `send_e2ee_chat()`, which evaluate ChaCha20-Poly1305.
+        1. Transport-Layer Protocol Framing Validation:
+           Validates that outgoing relayed payloads conform strictly to supported E2EE wire
+           packet framing specifications (FIPS 203/204 Handshake packets, or Double Ratchet wire
+           framing with minimum AEAD tag length >= 16 bytes). Rejects raw unencapsulated direct
+           application frames (e.g., TYPE_CHAT_DATA).
+        2. Cryptographic Security Boundary Demarcation:
+           Blind relays operate over opaque ciphertexts and do not hold the end-to-end symmetric
+           ratchet keys; consequently, transport relaying cannot cryptographically authenticate
+           or prove payload encryption.
+           Cryptographic confidentiality (IND-CCA2) and integrity (EUF-CMA) are enforced
+           exclusively at the session endpoints:
+           - Originator: Encrypts application payloads via `PQRatchetSession.ratchet_encrypt()`
+             (or `send_message_to_peer()` / `send_e2ee_chat()`).
+           - Recipient: Validates constant-time ChaCha20-Poly1305 MAC tag verification in
+             `PQRatchetSession.ratchet_decrypt()`. Forged, modified, or unauthenticated payloads
+             (including high-entropy plaintext) are unfailingly rejected at the recipient's
+             cryptographic boundary with a Poly1305 authentication error.
         3. msg_type MUST be explicitly specified (no insecure default).
         Complexity: O(k) fanout over k active peer links.
         """
@@ -279,28 +276,8 @@ class PQP2PNode:
             try:
                 pkt = RatchetDataPacket.deserialize(e2ee_payload)
                 if len(pkt.ciphertext) < AEAD_TAG_BYTES:
-                    raise ValueError(f"Ciphertext length {len(pkt.ciphertext)} is shorter than AEAD tag ({AEAD_TAG_BYTES} bytes)")
-
-                # Plaintext Injection Guard (enforced across all payload lengths):
-                # Authentic AEAD ciphertext is indistinguishable from uniform random noise.
-                # Detect and reject unencrypted plaintext across all lengths:
-                printable_count = sum(1 for b in pkt.ciphertext if 32 <= b <= 126 or b in (9, 10, 13))
-                printable_ratio = printable_count / len(pkt.ciphertext)
-                entropy = _calculate_shannon_entropy(pkt.ciphertext)
-                if printable_ratio > 0.75 or (len(pkt.ciphertext) >= 16 and entropy < 3.8) or (len(pkt.ciphertext) >= 32 and entropy < 4.5):
                     raise ValueError(
-                        f"Insecure relay rejection: RatchetDataPacket ciphertext exhibits plaintext characteristics "
-                        f"(entropy={entropy:.2f} bits/byte, printable_ratio={printable_ratio:.2%})"
-                    )
-
-                # Authenticated Ratchet Path Enforcement:
-                # Plaintext must be processed through the authenticated ratchet path (send_e2ee_chat).
-                # Local nodes originating RatchetDataPackets must possess an authenticated PQRatchetSession
-                # with target_peer_id to guarantee that the ciphertext is authentic AEAD under the ratchet.
-                if target_peer_id not in self._e2ee_sessions and target_peer_id not in self._staged_e2ee_sessions:
-                    raise ValueError(
-                        f"Insecure relay rejection: cannot originate RatchetDataPacket without an active authenticated "
-                        f"E2EE ratchet session for target peer '{target_peer_id}'. Application messages must be transmitted via send_e2ee_chat()."
+                        f"Ciphertext length {len(pkt.ciphertext)} is shorter than AEAD tag ({AEAD_TAG_BYTES} bytes)"
                     )
             except Exception as exc:
                 raise ValueError(

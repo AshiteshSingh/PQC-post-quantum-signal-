@@ -1,4 +1,95 @@
-(() => {
+var PQC = (() => {
+  var __defProp = Object.defineProperty;
+  var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+  var __getOwnPropNames = Object.getOwnPropertyNames;
+  var __hasOwnProp = Object.prototype.hasOwnProperty;
+  var __export = (target, all) => {
+    for (var name in all)
+      __defProp(target, name, { get: all[name], enumerable: true });
+  };
+  var __copyProps = (to, from, except, desc) => {
+    if (from && typeof from === "object" || typeof from === "function") {
+      for (let key of __getOwnPropNames(from))
+        if (!__hasOwnProp.call(to, key) && key !== except)
+          __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+    }
+    return to;
+  };
+  var __toCommonJS = (mod2) => __copyProps(__defProp({}, "__esModule", { value: true }), mod2);
+
+  // src/pqc-engine.js
+  var pqc_engine_exports = {};
+  __export(pqc_engine_exports, {
+    AEAD_NONCE_BYTES: () => AEAD_NONCE_BYTES,
+    AEAD_TAG_BYTES: () => AEAD_TAG_BYTES,
+    CHAIN_KEY_BYTES: () => CHAIN_KEY_BYTES,
+    DOMAIN_ASYM_RATCHET: () => DOMAIN_ASYM_RATCHET,
+    DOMAIN_AUTH_INITIATOR: () => DOMAIN_AUTH_INITIATOR,
+    DOMAIN_AUTH_RESPONDER: () => DOMAIN_AUTH_RESPONDER,
+    DOMAIN_AUTH_TRANSCRIPT: () => DOMAIN_AUTH_TRANSCRIPT,
+    DOMAIN_CHAIN_ADVANCE: () => DOMAIN_CHAIN_ADVANCE,
+    DOMAIN_HYBRID_KEM: () => DOMAIN_HYBRID_KEM,
+    DOMAIN_MESSAGE_KEY: () => DOMAIN_MESSAGE_KEY,
+    DOMAIN_ROOT_INIT: () => DOMAIN_ROOT_INIT,
+    ENCRYPTION_NONCE_BYTES: () => ENCRYPTION_NONCE_BYTES,
+    HandshakeInitPacket: () => HandshakeInitPacket,
+    HandshakeRespPacket: () => HandshakeRespPacket,
+    HybridKEMCiphertext: () => HybridKEMCiphertext,
+    HybridKEMPrivateKey: () => HybridKEMPrivateKey,
+    HybridKEMPublicKey: () => HybridKEMPublicKey,
+    IDENTITY_SALT_BYTES: () => IDENTITY_SALT_BYTES,
+    IdentityPrivateKey: () => IdentityPrivateKey,
+    IdentityPublicKey: () => IdentityPublicKey,
+    MAGIC_BYTES: () => MAGIC_BYTES,
+    MAX_PACKET_PAYLOAD_BYTES: () => MAX_PACKET_PAYLOAD_BYTES,
+    MAX_PBKDF2_ROUNDS: () => MAX_PBKDF2_ROUNDS,
+    MAX_RATCHET_SKIP_GAP: () => MAX_RATCHET_SKIP_GAP,
+    MAX_SCRYPT_MEMORY_BYTES: () => MAX_SCRYPT_MEMORY_BYTES,
+    MAX_SCRYPT_N: () => MAX_SCRYPT_N,
+    MAX_SCRYPT_P: () => MAX_SCRYPT_P,
+    MAX_SCRYPT_R: () => MAX_SCRYPT_R,
+    MAX_SKIPPED_KEYS_CACHE: () => MAX_SKIPPED_KEYS_CACHE,
+    MIN_PBKDF2_ROUNDS: () => MIN_PBKDF2_ROUNDS,
+    MIN_SCRYPT_N: () => MIN_SCRYPT_N,
+    MIN_SCRYPT_P: () => MIN_SCRYPT_P,
+    MIN_SCRYPT_R: () => MIN_SCRYPT_R,
+    MLDSA65_PUBLIC_KEY_BYTES: () => MLDSA65_PUBLIC_KEY_BYTES,
+    MLDSA65_SECRET_KEY_BYTES: () => MLDSA65_SECRET_KEY_BYTES,
+    MLDSA65_SIGNATURE_BYTES: () => MLDSA65_SIGNATURE_BYTES,
+    MLKEM768_CIPHERTEXT_BYTES: () => MLKEM768_CIPHERTEXT_BYTES,
+    MLKEM768_PUBLIC_KEY_BYTES: () => MLKEM768_PUBLIC_KEY_BYTES,
+    MLKEM768_SHARED_SECRET_BYTES: () => MLKEM768_SHARED_SECRET_BYTES,
+    MSG_TYPE_HANDSHAKE_INIT: () => MSG_TYPE_HANDSHAKE_INIT,
+    MSG_TYPE_HANDSHAKE_RESP: () => MSG_TYPE_HANDSHAKE_RESP,
+    MSG_TYPE_RATCHET_DATA: () => MSG_TYPE_RATCHET_DATA,
+    MSG_TYPE_TERMINATE: () => MSG_TYPE_TERMINATE,
+    PBKDF2_ROUNDS: () => PBKDF2_ROUNDS,
+    PQRatchetSession: () => PQRatchetSession,
+    PROTOCOL_VERSION: () => PROTOCOL_VERSION,
+    ROOT_KEY_BYTES: () => ROOT_KEY_BYTES,
+    RatchetDataPacket: () => RatchetDataPacket,
+    SCRYPT_N: () => SCRYPT_N,
+    SCRYPT_P: () => SCRYPT_P,
+    SCRYPT_R: () => SCRYPT_R,
+    SYMMETRIC_KEY_BYTES: () => SYMMETRIC_KEY_BYTES,
+    X25519_KEY_BYTES: () => X25519_KEY_BYTES,
+    X25519_SHARED_SECRET_BYTES: () => X25519_SHARED_SECRET_BYTES,
+    asymmetric_ratchet_kdf: () => asymmetric_ratchet_kdf,
+    base64ToBytes: () => base64ToBytes,
+    bytesToBase64: () => bytesToBase64,
+    bytesToHex: () => bytesToHex3,
+    computeInitiatorTranscript: () => computeInitiatorTranscript,
+    computeResponderTranscript: () => computeResponderTranscript,
+    concatBytes: () => concatBytes3,
+    constantTimeCompare: () => constantTimeCompare,
+    decryptIdentityKey: () => decryptIdentityKey,
+    dual_prf_combine: () => dual_prf_combine,
+    encryptIdentityKey: () => encryptIdentityKey,
+    hexToBytes: () => hexToBytes3,
+    symmetric_chain_step: () => symmetric_chain_step,
+    zeroize: () => zeroize
+  });
+
   // node_modules/@noble/hashes/_u64.js
   var U32_MASK64 = /* @__PURE__ */ (() => BigInt(2 ** 32 - 1))();
   var _32n = /* @__PURE__ */ BigInt(32);
@@ -4865,6 +4956,15 @@
   var PBKDF2_ROUNDS = 6e5;
   var IDENTITY_SALT_BYTES = 32;
   var ENCRYPTION_NONCE_BYTES = 12;
+  var MIN_SCRYPT_N = 1024;
+  var MAX_SCRYPT_N = 65536;
+  var MIN_SCRYPT_R = 1;
+  var MAX_SCRYPT_R = 8;
+  var MIN_SCRYPT_P = 1;
+  var MAX_SCRYPT_P = 2;
+  var MAX_SCRYPT_MEMORY_BYTES = 70 * 1024 * 1024;
+  var MIN_PBKDF2_ROUNDS = 1e5;
+  var MAX_PBKDF2_ROUNDS = 6e5;
   function encryptIdentityKey(identityKey, passphrase) {
     const salt = globalThis.crypto.getRandomValues(new Uint8Array(IDENTITY_SALT_BYTES));
     const nonce = globalThis.crypto.getRandomValues(new Uint8Array(ENCRYPTION_NONCE_BYTES));
@@ -4872,7 +4972,7 @@
     let derivedKey = null;
     let rawKeyBytes = null;
     try {
-      derivedKey = scrypt(passBytes, salt, { N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P, dkLen: SYMMETRIC_KEY_BYTES });
+      derivedKey = scrypt(passBytes, salt, { N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P, dkLen: SYMMETRIC_KEY_BYTES, maxmem: MAX_SCRYPT_MEMORY_BYTES });
       const cipher = chacha20poly1305(derivedKey, nonce);
       rawKeyBytes = identityKey.toBytes();
       const ciphertext = cipher.encrypt(rawKeyBytes);
@@ -4893,6 +4993,42 @@
     }
   }
   function decryptIdentityKey(encryptedEnvelope, passphrase) {
+    if (!encryptedEnvelope || typeof encryptedEnvelope !== "object") {
+      throw new Error("Invalid encrypted envelope: non-null object required.");
+    }
+    if (!encryptedEnvelope.salt || !encryptedEnvelope.nonce || !encryptedEnvelope.ciphertext) {
+      throw new Error("Invalid encrypted envelope: missing required fields (salt, nonce, ciphertext).");
+    }
+    const kdf = encryptedEnvelope.kdf || (encryptedEnvelope.N ? "scrypt" : "pbkdf2");
+    let N3 = SCRYPT_N;
+    let r = SCRYPT_R;
+    let p = SCRYPT_P;
+    let rounds = PBKDF2_ROUNDS;
+    if (kdf === "scrypt") {
+      N3 = encryptedEnvelope.N !== void 0 ? encryptedEnvelope.N : SCRYPT_N;
+      r = encryptedEnvelope.r !== void 0 ? encryptedEnvelope.r : SCRYPT_R;
+      p = encryptedEnvelope.p !== void 0 ? encryptedEnvelope.p : SCRYPT_P;
+      if (!Number.isInteger(N3) || N3 < MIN_SCRYPT_N || N3 > MAX_SCRYPT_N || (N3 & N3 - 1) !== 0) {
+        throw new Error(`Unsupported or out-of-bounds scrypt N parameter: ${N3}. Must be a power of 2 in [${MIN_SCRYPT_N}, ${MAX_SCRYPT_N}].`);
+      }
+      if (!Number.isInteger(r) || r < MIN_SCRYPT_R || r > MAX_SCRYPT_R) {
+        throw new Error(`Unsupported or out-of-bounds scrypt r parameter: ${r}. Must be an integer in [${MIN_SCRYPT_R}, ${MAX_SCRYPT_R}].`);
+      }
+      if (!Number.isInteger(p) || p < MIN_SCRYPT_P || p > MAX_SCRYPT_P) {
+        throw new Error(`Unsupported or out-of-bounds scrypt p parameter: ${p}. Must be an integer in [${MIN_SCRYPT_P}, ${MAX_SCRYPT_P}].`);
+      }
+      const memReq = 128 * r * (N3 + p + 1);
+      if (memReq > MAX_SCRYPT_MEMORY_BYTES) {
+        throw new Error(`Scrypt memory requirement (${memReq} bytes) exceeds explicit work/memory limit (${MAX_SCRYPT_MEMORY_BYTES} bytes).`);
+      }
+    } else if (kdf === "pbkdf2") {
+      rounds = encryptedEnvelope.rounds !== void 0 ? encryptedEnvelope.rounds : PBKDF2_ROUNDS;
+      if (!Number.isInteger(rounds) || rounds < MIN_PBKDF2_ROUNDS || rounds > MAX_PBKDF2_ROUNDS) {
+        throw new Error(`Unsupported or out-of-bounds PBKDF2 rounds: ${rounds}. Must be an integer in [${MIN_PBKDF2_ROUNDS}, ${MAX_PBKDF2_ROUNDS}].`);
+      }
+    } else {
+      throw new Error(`Unsupported KDF algorithm: ${kdf}. Allowed algorithms: 'scrypt', 'pbkdf2'.`);
+    }
     const salt = base64ToBytes(encryptedEnvelope.salt);
     const nonce = base64ToBytes(encryptedEnvelope.nonce);
     const ciphertext = base64ToBytes(encryptedEnvelope.ciphertext);
@@ -4900,13 +5036,9 @@
     let derivedKey = null;
     let rawKeyBytes = null;
     try {
-      if (encryptedEnvelope.kdf === "scrypt" || !encryptedEnvelope.kdf && encryptedEnvelope.N) {
-        const N3 = encryptedEnvelope.N || SCRYPT_N;
-        const r = encryptedEnvelope.r || SCRYPT_R;
-        const p = encryptedEnvelope.p || SCRYPT_P;
-        derivedKey = scrypt(passBytes, salt, { N: N3, r, p, dkLen: SYMMETRIC_KEY_BYTES });
+      if (kdf === "scrypt") {
+        derivedKey = scrypt(passBytes, salt, { N: N3, r, p, dkLen: SYMMETRIC_KEY_BYTES, maxmem: MAX_SCRYPT_MEMORY_BYTES });
       } else {
-        const rounds = encryptedEnvelope.rounds || PBKDF2_ROUNDS;
         derivedKey = pbkdf2(sha3_512, passBytes, salt, { c: rounds, dkLen: SYMMETRIC_KEY_BYTES });
       }
       const cipher = chacha20poly1305(derivedKey, nonce);
@@ -5498,10 +5630,24 @@
         X25519_KEY_BYTES,
         DOMAIN_AUTH_INITIATOR,
         DOMAIN_AUTH_RESPONDER,
-        MAX_RATCHET_SKIP_GAP
+        MAX_RATCHET_SKIP_GAP,
+        SCRYPT_N,
+        SCRYPT_R,
+        SCRYPT_P,
+        MIN_SCRYPT_N,
+        MAX_SCRYPT_N,
+        MIN_SCRYPT_R,
+        MAX_SCRYPT_R,
+        MIN_SCRYPT_P,
+        MAX_SCRYPT_P,
+        MAX_SCRYPT_MEMORY_BYTES,
+        PBKDF2_ROUNDS,
+        MIN_PBKDF2_ROUNDS,
+        MAX_PBKDF2_ROUNDS
       }
     };
   }
+  return __toCommonJS(pqc_engine_exports);
 })();
 /*! Bundled license information:
 
