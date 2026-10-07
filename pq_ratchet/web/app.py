@@ -163,6 +163,23 @@ async def serve_manifest():
     return FileResponse(os.path.join(STATIC_DIR, "manifest.json"), media_type="application/json")
 
 
+@app.get("/manifest.sig")
+async def serve_manifest_sig():
+    sig_path = os.path.join(STATIC_DIR, "manifest.sig")
+    if os.path.isfile(sig_path):
+        return FileResponse(sig_path, media_type="application/octet-stream")
+    raise HTTPException(status_code=404, detail="Manifest signature not found")
+
+
+@app.get("/release_key.pub")
+async def serve_release_key():
+    pk_path = os.path.join(STATIC_DIR, "release_key.pub")
+    if os.path.isfile(pk_path):
+        return FileResponse(pk_path, media_type="application/octet-stream")
+    raise HTTPException(status_code=404, detail="Release public key not found")
+
+
+
 @app.get("/api/online-users")
 async def list_online_users():
     cleanup_expired_sessions()

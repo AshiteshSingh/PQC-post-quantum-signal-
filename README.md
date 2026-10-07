@@ -286,9 +286,9 @@ bob_session.close()
 - **Browser Threat Model & Adversarial Web Host:** The WebSocket relay is cryptographically blind to transit payloads (IND-CCA2 / EUF-CMA). However, in dynamic web delivery, the web host serving the JavaScript controls code execution. An adversarial or compromised host could serve trojanized JavaScript that intercepts unlocked keys or passphrases. To eliminate host trust:
   1. **Native Client Isolation:** Use the native CLI (`pq-ratchet chat` / `pq-ratchet p2p`), which runs entirely in local Python/Rust/C memory and never downloads code from the network.
   2. **Decoupled Standalone Client:** The web client can be executed offline locally (via `file://` or local static server) and pointed to any untrusted remote relay using the Relay Server URL parameter (`?relay=wss://<relay-host>`).
-  3. **Cryptographic Manifest Verification:** All web client assets (`index.html`, `style.css`, `pq-crypto.bundle.js`, `app.js`) are pinned in `manifest.json`. Independent audits verify their integrity via:
+  3. **Cryptographic Manifest & PQC Signature Verification:** All mandatory web client assets (`index.html`, `style.css`, `pq-crypto.bundle.js`, `app.js`) are pinned in `manifest.json`. The verification harness (`verify_bundle.py`) authenticates the distribution manifest against a separately trusted root SHA-256 digest and an unforgeable post-quantum FIPS 204 ML-DSA-65 digital signature (`manifest.sig` verified against `release_key.pub`), strictly rejecting omitted assets, empty asset sets, or unauthenticated manifests:
      ```bash
-     $ python -m pq_ratchet.web.verify_bundle
+     $ python -m pq_ratchet.web.verify_bundle --require-sig
      ```
 - **Formal Verification Scope:** The ProVerif model (`formal_verification/pq_ratchet.pv`) evaluates the symbolic core of the alternating KEM handshake and ratchet turn under a Dolev-Yao quantum adversary with standard cryptographic abstractions (perfect hashing, ideal KEM, unforgeable signatures), modeling confidentiality and injective agreement rather than serving as an end-to-end computational proof of the Python codebase.
 

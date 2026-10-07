@@ -1,0 +1,6 @@
+# Deterministic line endings and binary attributes for cryptographic bundles
+* text=auto
+
+pq_ratchet/web/static/manifest.json text eol=lf
+pq_ratchet/web/static/manifest.sig binary
+pq_ratchet/web/static/release_key.pub binary

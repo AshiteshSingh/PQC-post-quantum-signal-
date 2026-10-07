@@ -6,6 +6,7 @@ dist/
 build/
 *.key
 *.pub
+!pq_ratchet/web/static/release_key.pub
 .pytest_cache/
 .coverage
 htmlcov/

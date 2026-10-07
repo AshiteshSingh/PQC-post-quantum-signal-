@@ -173,6 +173,8 @@ class TestEphemeralWebPQRatchet(unittest.TestCase):
         """Verifies root routes for standalone client execution and manifest distribution."""
         for path, expected_type in [
             ("/manifest.json", "application/json"),
+            ("/manifest.sig", "application/octet-stream"),
+            ("/release_key.pub", "application/octet-stream"),
             ("/pq-crypto.bundle.js", "application/javascript"),
             ("/app.js", "application/javascript"),
             ("/style.css", "text/css"),
@@ -184,11 +186,105 @@ class TestEphemeralWebPQRatchet(unittest.TestCase):
     def test_client_manifest_integrity_verification(self):
         """Verifies deterministic cryptographic manifest verification for independent client audits."""
         from pq_ratchet.web.verify_bundle import verify_static_manifest
-        valid, report = verify_static_manifest()
+        valid, report = verify_static_manifest(require_signature=True)
         self.assertTrue(valid, f"Manifest verification failed: {report}")
+        self.assertIn("manifest_digest", report)
+        self.assertIn("AUTHENTICATED", report["manifest_digest"])
+        self.assertIn("manifest_signature", report)
+        self.assertIn("AUTHENTICATED", report["manifest_signature"])
         for asset in ["index.html", "style.css", "pq-crypto.bundle.js", "app.js"]:
             self.assertIn(asset, report)
             self.assertIn("VERIFIED", report[asset])
+
+    def test_manifest_empty_files_rejected(self):
+        """Ensures a manifest with empty 'files: {}' fails verification."""
+        import tempfile
+        import os
+        from pq_ratchet.web.verify_bundle import verify_static_manifest
+        with tempfile.TemporaryDirectory() as td:
+            mp = os.path.join(td, "manifest.json")
+            with open(mp, "w", encoding="utf-8") as f:
+                json.dump({"version": "1.0.0", "files": {}}, f)
+            valid, report = verify_static_manifest(static_dir=td, manifest_path=mp, trusted_digest=None, enforce_auth=False)
+            self.assertFalse(valid)
+            self.assertIn("manifest_files", report)
+            self.assertIn("EMPTY_ASSET_SET", report["manifest_files"])
+
+    def test_manifest_missing_files_field_rejected(self):
+        """Ensures a manifest missing the 'files' field entirely fails verification."""
+        import tempfile
+        import os
+        from pq_ratchet.web.verify_bundle import verify_static_manifest
+        with tempfile.TemporaryDirectory() as td:
+            mp = os.path.join(td, "manifest.json")
+            with open(mp, "w", encoding="utf-8") as f:
+                json.dump({"version": "1.0.0"}, f)
+            valid, report = verify_static_manifest(static_dir=td, manifest_path=mp, trusted_digest=None, enforce_auth=False)
+            self.assertFalse(valid)
+            self.assertIn("manifest_files", report)
+            self.assertIn("INVALID_SCHEMA", report["manifest_files"])
+
+    def test_manifest_omitted_mandatory_assets_rejected(self):
+        """Ensures a manifest omitting any mandatory client asset (e.g. app.js) fails verification."""
+        import tempfile
+        import os
+        from pq_ratchet.web.verify_bundle import verify_static_manifest
+        with tempfile.TemporaryDirectory() as td:
+            mp = os.path.join(td, "manifest.json")
+            with open(mp, "w", encoding="utf-8") as f:
+                json.dump({
+                    "version": "1.0.0",
+                    "files": {
+                        "index.html": {"sha256": "fake", "sri_sha384": "fake"},
+                        "style.css": {"sha256": "fake", "sri_sha384": "fake"},
+                    }
+                }, f)
+            valid, report = verify_static_manifest(static_dir=td, manifest_path=mp, trusted_digest=None, enforce_auth=False)
+            self.assertFalse(valid)
+            self.assertIn("mandatory_assets", report)
+            self.assertIn("OMITTED_MANDATORY_ASSETS", report["mandatory_assets"])
+            self.assertIn("app.js", report["mandatory_assets"])
+
+    def test_manifest_tampering_and_digest_mismatch_rejected(self):
+        """Ensures a modified manifest fails trusted root digest authentication."""
+        import tempfile
+        import os
+        from pq_ratchet.web.verify_bundle import verify_static_manifest
+        with tempfile.TemporaryDirectory() as td:
+            mp = os.path.join(td, "manifest.json")
+            with open(mp, "w", encoding="utf-8") as f:
+                json.dump({"version": "trojanized", "files": {}}, f)
+            valid, report = verify_static_manifest(static_dir=td, manifest_path=mp)
+            self.assertFalse(valid)
+            self.assertIn("manifest_digest", report)
+            self.assertIn("DIGEST_MISMATCH", report["manifest_digest"])
+
+    def test_manifest_signature_tampering_rejected(self):
+        """Ensures a corrupted or forged ML-DSA-65 signature is rejected."""
+        import tempfile
+        import os
+        from pq_ratchet.web.verify_bundle import verify_static_manifest
+        from pq_ratchet.primitives.identity import IdentityPrivateKey
+        with tempfile.TemporaryDirectory() as td:
+            mp = os.path.join(td, "manifest.json")
+            sig_p = os.path.join(td, "manifest.sig")
+            with open(mp, "w", encoding="utf-8") as f:
+                json.dump({"version": "1.0.0"}, f)
+            # Write a signature forged by an untrusted key
+            forged_sig = IdentityPrivateKey.generate().sign(b"arbitrary")
+            with open(sig_p, "wb") as f:
+                f.write(forged_sig)
+            valid, report = verify_static_manifest(
+                static_dir=td,
+                manifest_path=mp,
+                trusted_digest=None,
+                signature_path=sig_p,
+                require_signature=True,
+            )
+            self.assertFalse(valid)
+            self.assertIn("manifest_signature", report)
+            self.assertIn("SIGNATURE_VERIFICATION_FAILED", report["manifest_signature"])
+
 
 
 if __name__ == "__main__":
