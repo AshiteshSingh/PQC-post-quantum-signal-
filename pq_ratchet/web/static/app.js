@@ -57,16 +57,6 @@
   if (inputPairingToken && initialTokenParam) {
     inputPairingToken.value = initialTokenParam;
   }
-  if (window.location.protocol !== "file:" && inputPairingToken && !inputPairingToken.value) {
-    fetch("/api/pairing-token")
-      .then(r => r.ok ? r.json() : null)
-      .then(d => {
-        if (d && d.pairing_token && inputPairingToken && !inputPairingToken.value) {
-          inputPairingToken.value = d.pairing_token;
-        }
-      })
-      .catch(() => {});
-  }
 
   const headerAvatar = document.getElementById("header-avatar");
   const displayPeerName = document.getElementById("display-peer-name");

@@ -17,6 +17,8 @@ from pq_ratchet.web.app import (
     cleanup_expired_sessions,
     get_pairing_token,
     set_pairing_token,
+    get_admin_token,
+    set_admin_token,
 )
 
 
@@ -163,27 +165,71 @@ class TestEphemeralWebPQRatchet(unittest.TestCase):
 
     def test_pairing_token_api_origin_isolation(self):
         """
-        Validates that /api/pairing-token endpoint permits same-origin access but strictly
-        forbids opaque origins ('null') and untrusted cross-origin callers.
+        P2 Security Invariant:
+        Validates that /api/pairing-token endpoint strictly mandates an admin authorization
+        step and rejects unauthenticated callers even if browser-origin headers are omitted.
         """
-        active_token = get_pairing_token()
+        active_pairing_token = get_pairing_token()
+        admin_token = get_admin_token()
 
-        # 1. Same-origin caller succeeds
-        resp_same = self.client.get("/api/pairing-token", headers={"host": "localhost:8000"})
-        self.assertEqual(resp_same.status_code, 200)
-        self.assertEqual(resp_same.json().get("pairing_token"), active_token)
-        self.assertEqual(resp_same.headers.get("cross-origin-resource-policy"), "same-origin")
+        # 1. Unauthenticated request without browser headers (no Origin, no Sec-Fetch-Site, no Auth) rejected with 401
+        resp_no_auth = self.client.get("/api/pairing-token")
+        self.assertEqual(resp_no_auth.status_code, 401)
+        self.assertIn("WWW-Authenticate", resp_no_auth.headers)
 
-        # 2. Opaque origin (null) blocked with 403 Forbidden
-        resp_opaque = self.client.get("/api/pairing-token", headers={"origin": "null"})
+        # 2. Unauthenticated request with invalid/forged bearer token rejected with 401
+        resp_bad_auth = self.client.get(
+            "/api/pairing-token",
+            headers={"Authorization": "Bearer forged_admin_token_xyz"},
+        )
+        self.assertEqual(resp_bad_auth.status_code, 401)
+
+        # 3. Authenticated request via Authorization Bearer header succeeds
+        resp_auth_bearer = self.client.get(
+            "/api/pairing-token",
+            headers={"Authorization": f"Bearer {admin_token}", "host": "localhost:8000"},
+        )
+        self.assertEqual(resp_auth_bearer.status_code, 200)
+        self.assertEqual(resp_auth_bearer.json().get("pairing_token"), active_pairing_token)
+        self.assertEqual(resp_auth_bearer.headers.get("cross-origin-resource-policy"), "same-origin")
+
+        # 4. Authenticated request via X-Admin-Token header succeeds
+        resp_auth_header = self.client.get(
+            "/api/pairing-token",
+            headers={"X-Admin-Token": admin_token, "host": "localhost:8000"},
+        )
+        self.assertEqual(resp_auth_header.status_code, 200)
+        self.assertEqual(resp_auth_header.json().get("pairing_token"), active_pairing_token)
+
+        # 5. Authenticated POST rotates the pairing token
+        resp_rotate = self.client.post(
+            "/api/pairing-token",
+            headers={"Authorization": f"Bearer {admin_token}", "host": "localhost:8000"},
+        )
+        self.assertEqual(resp_rotate.status_code, 200)
+        new_token = resp_rotate.json().get("pairing_token")
+        self.assertNotEqual(new_token, active_pairing_token)
+        self.assertEqual(get_pairing_token(), new_token)
+
+        # 6. Even with valid admin token, opaque origin (null) is blocked with 403 Forbidden
+        resp_opaque = self.client.get(
+            "/api/pairing-token",
+            headers={"Authorization": f"Bearer {admin_token}", "origin": "null"},
+        )
         self.assertEqual(resp_opaque.status_code, 403)
 
-        # 3. Malicious cross-origin caller blocked with 403 Forbidden
-        resp_cross = self.client.get("/api/pairing-token", headers={"origin": "https://malicious.com"})
+        # 7. Even with valid admin token, malicious cross-origin caller is blocked with 403 Forbidden
+        resp_cross = self.client.get(
+            "/api/pairing-token",
+            headers={"Authorization": f"Bearer {admin_token}", "origin": "https://malicious.com"},
+        )
         self.assertEqual(resp_cross.status_code, 403)
 
-        # 4. Sec-Fetch-Site cross-site request blocked with 403 Forbidden
-        resp_sec = self.client.get("/api/pairing-token", headers={"sec-fetch-site": "cross-site"})
+        # 8. Sec-Fetch-Site cross-site request is blocked with 403 Forbidden
+        resp_sec = self.client.get(
+            "/api/pairing-token",
+            headers={"Authorization": f"Bearer {admin_token}", "sec-fetch-site": "cross-site"},
+        )
         self.assertEqual(resp_sec.status_code, 403)
 
     def test_cors_and_corp_headers_for_standalone_clients(self):

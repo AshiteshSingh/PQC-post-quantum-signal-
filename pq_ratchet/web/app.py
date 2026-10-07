@@ -41,6 +41,11 @@ MAX_PAYLOAD_BYTES = 32768   # 32 KiB strict DoS payload ceiling
 DEFAULT_PAIRING_TOKEN: str = os.environ.get("PQC_PAIRING_TOKEN", "")
 _active_pairing_token: str = DEFAULT_PAIRING_TOKEN or secrets.token_urlsafe(16)
 
+# Cryptographically secure admin authorization token required for privileged API access.
+# Prevents unauthorized retrieval or rotation of pairing tokens via direct HTTP requests.
+DEFAULT_ADMIN_TOKEN: str = os.environ.get("PQC_ADMIN_TOKEN", "")
+_active_admin_token: str = DEFAULT_ADMIN_TOKEN or secrets.token_urlsafe(24)
+
 
 def get_pairing_token() -> str:
     """Returns active pairing token used to authenticate opaque origins."""
@@ -61,6 +66,45 @@ def verify_pairing_token(provided_token: Optional[str]) -> bool:
     if not provided_token or not _active_pairing_token:
         return False
     return hmac.compare_digest(provided_token.strip(), _active_pairing_token.strip())
+
+
+def get_admin_token() -> str:
+    """Returns active admin token required for privileged operations."""
+    return _active_admin_token
+
+
+def set_admin_token(token: str) -> None:
+    """Configures the active admin token."""
+    global _active_admin_token
+    _active_admin_token = token
+
+
+def verify_admin_token(provided_token: Optional[str]) -> bool:
+    """
+    Constant-time verification of admin authorization credentials.
+    Complexity: O(|token|) constant-time comparison via hmac.compare_digest.
+    """
+    if not provided_token or not _active_admin_token:
+        return False
+    return hmac.compare_digest(provided_token.strip(), _active_admin_token.strip())
+
+
+def extract_auth_token(request: Request) -> Optional[str]:
+    """Extracts authorization bearer token or admin token from HTTP request."""
+    auth_header = request.headers.get("authorization")
+    if auth_header:
+        parts = auth_header.strip().split()
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            return parts[1]
+        elif len(parts) == 1:
+            return parts[0]
+    x_admin = request.headers.get("x-admin-token")
+    if x_admin:
+        return x_admin.strip()
+    query_token = request.query_params.get("auth") or request.query_params.get("admin_token")
+    if query_token:
+        return query_token.strip()
+    return None
 
 
 class ZeroTraceMiddleware(BaseHTTPMiddleware):
@@ -247,9 +291,19 @@ async def list_online_users():
 @app.get("/api/pairing-token")
 async def get_relay_pairing_token(request: Request):
     """
-    Returns active pairing token to same-origin callers only.
-    Strictly forbids opaque origins ('null') and cross-origin callers with 403 Forbidden.
+    Returns active pairing token exclusively to authenticated administrators.
+    Requires valid admin authorization credential (Bearer token or X-Admin-Token).
+    Origin headers alone are strictly rejected as an authentication substitute.
     """
+    auth_token = extract_auth_token(request)
+    if not verify_admin_token(auth_token):
+        return JSONResponse(
+            {"error": "Unauthorized: valid admin authorization credential required"},
+            status_code=401,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Defense-in-depth: cross-origin and opaque origins strictly blocked
     sec_site = request.headers.get("sec-fetch-site")
     if sec_site and sec_site.lower() == "cross-site":
         return JSONResponse({"error": "Cross-site access forbidden"}, status_code=403)
@@ -268,7 +322,26 @@ async def get_relay_pairing_token(request: Request):
         origin_host = parsed_origin.split(":")[0].lower() if ":" in parsed_origin else parsed_origin
         if parsed_origin not in allowed and origin_host not in allowed:
             return JSONResponse({"error": "Cross-origin access forbidden"}, status_code=403)
+
     return JSONResponse({"pairing_token": get_pairing_token()})
+
+
+@app.post("/api/pairing-token")
+async def rotate_relay_pairing_token(request: Request):
+    """
+    Rotates and returns a new active pairing token.
+    Requires valid admin authorization credential.
+    """
+    auth_token = extract_auth_token(request)
+    if not verify_admin_token(auth_token):
+        return JSONResponse(
+            {"error": "Unauthorized: valid admin authorization credential required"},
+            status_code=401,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    new_token = secrets.token_urlsafe(16)
+    set_pairing_token(new_token)
+    return JSONResponse({"pairing_token": new_token, "status": "rotated"})
 
 
 async def safe_send_json(ws: WebSocket, payload: dict) -> bool:

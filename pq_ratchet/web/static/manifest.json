@@ -1,12 +1,12 @@
 {
   "version": "1.0.0",
-  "timestamp": 1775560000,
+  "timestamp": 1775565000,
   "description": "Cryptographically pinned and authenticated client web assets for PQ-Ratchet",
   "files": {
     "app.js": {
-      "sha256": "429eba4252e90f91ea54aa6703a8bb7a256a018290c0216bc8bbb7b33cc40dc2",
-      "sri_sha384": "sha384-yaOjCnEwZ+0GKK5LlGDIOqO4tImwg4T98Xwb6R+QoK/hoaYv17/g1NnqnaXoINhY",
-      "bytes": 31317
+      "sha256": "b74d041177bae617979476836ab91eb3b93c4f814647677d129f5c1fbbedc9b8",
+      "sri_sha384": "sha384-nfXSekPdcL97Xi/LUIfK63nfL+naYB8Ayuz1eIDjd3pi4jt7BtxGudBKjnFAVh08",
+      "bytes": 30945
     },
     "index.html": {
       "sha256": "8fc1b6c861bda20e25ade7a383eacbe3d775e74088401fbdfe5f09de3517c8be",

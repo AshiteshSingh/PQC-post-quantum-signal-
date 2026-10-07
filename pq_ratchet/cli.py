@@ -520,6 +520,7 @@ def main():
     p_web.add_argument("--ssl-certfile", default=None, help="SSL certificate file path for HTTPS / WSS")
     p_web.add_argument("--tls", action="store_true", help="Generate ephemeral self-signed TLS cert for instant HTTPS/WSS")
     p_web.add_argument("--pairing-token", default=None, help="Pairing token for authenticating opaque/file:// origins")
+    p_web.add_argument("--admin-token", default=None, help="Admin authorization token for privileged API access")
 
     args = parser.parse_args()
 
@@ -610,13 +611,18 @@ def main():
         if args.pairing_token:
             from pq_ratchet.web.app import set_pairing_token
             set_pairing_token(args.pairing_token)
-        from pq_ratchet.web.app import get_pairing_token
+        if args.admin_token:
+            from pq_ratchet.web.app import set_admin_token
+            set_admin_token(args.admin_token)
+        from pq_ratchet.web.app import get_pairing_token, get_admin_token
         ptoken = get_pairing_token()
+        atoken = get_admin_token()
 
         proto = "https" if ssl_certfile else "http"
         print(f"\n[+] Launching Post-Quantum Secure Web Chat at {proto}://localhost:{args.port}")
         print(f"[+] Zero IP retention, zero disk storage, 1-hour ephemeral registry.")
-        print(f"[+] Pairing Token for opaque/file:// origins: {ptoken}\n")
+        print(f"[+] Pairing Token for opaque/file:// origins: {ptoken}")
+        print(f"[+] Admin Authorization Token: {atoken}\n")
 
         uvicorn.run(
             app,
