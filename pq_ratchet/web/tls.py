@@ -21,7 +21,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
 
-def generate_ephemeral_tls_cert(host: str = "127.0.0.1") -> Tuple[str, str]:
+def generate_ephemeral_tls_cert(host: str = "127.0.0.1", additional_hosts: list[str] = None) -> Tuple[str, str]:
     """
     Generates a secure, ephemeral Ed25519 self-signed TLS certificate
     and writes it to a temporary directory.
@@ -42,6 +42,14 @@ def generate_ephemeral_tls_cert(host: str = "127.0.0.1") -> Tuple[str, str]:
 
     # Add standard loopback IPv4
     alt_names.append(x509.IPAddress(ipaddress.ip_address("127.0.0.1")))
+
+    if additional_hosts:
+        for extra in additional_hosts:
+            try:
+                extra_ip = ipaddress.ip_address(extra)
+                alt_names.append(x509.IPAddress(extra_ip))
+            except ValueError:
+                alt_names.append(x509.DNSName(extra))
 
     now = datetime.datetime.now(datetime.timezone.utc)
     cert = (
