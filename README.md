@@ -283,7 +283,13 @@ bob_session.close()
 - **Best-Effort Memory Zeroization (Runtime-Bounded):** Ephemeral root keys, symmetric chain keys, and skipped message keys maintained in mutable `bytearray` buffers are explicitly overwritten in-place with zeros (`zeroize()`) upon ratcheting, eviction, or session destruction. However, because CPython's memory allocator, garbage collector, and CFFI bindings manage immutable `bytes` and opaque OpenSSL/Rust key structs outside direct Python memory control, absolute physical RAM zeroization cannot be guaranteed at the interpreter layer.
 - **Bounded Skipped Keys Cache:** Out-of-order message buffering enforces an LRU eviction policy capped at 1,000 keys to prevent memory exhaustion DoS.
 - **Anti-Replay Protection:** Nonces are derived deterministically from $(epoch, seq)$ tuples bound into ChaCha20-Poly1305 Associated Data. Replayed frames trigger immediate AEAD authentication failures.
-- **Browser Threat Model & Identity Trust:** In-browser messaging executes cryptographic primitives within the browser runtime (WebAssembly/JS), but inherently trusts the origin delivering the web assets. Peer public keys received from the relay server are marked as Unverified (Trust-On-First-Use) until the user explicitly compares Safety Numbers out-of-band and pins the identity in local storage, preventing server-assisted Man-in-the-Middle attacks.
+- **Browser Threat Model & Adversarial Web Host:** The WebSocket relay is cryptographically blind to transit payloads (IND-CCA2 / EUF-CMA). However, in dynamic web delivery, the web host serving the JavaScript controls code execution. An adversarial or compromised host could serve trojanized JavaScript that intercepts unlocked keys or passphrases. To eliminate host trust:
+  1. **Native Client Isolation:** Use the native CLI (`pq-ratchet chat` / `pq-ratchet p2p`), which runs entirely in local Python/Rust/C memory and never downloads code from the network.
+  2. **Decoupled Standalone Client:** The web client can be executed offline locally (via `file://` or local static server) and pointed to any untrusted remote relay using the Relay Server URL parameter (`?relay=wss://<relay-host>`).
+  3. **Cryptographic Manifest Verification:** All web client assets (`index.html`, `style.css`, `pq-crypto.bundle.js`, `app.js`) are pinned in `manifest.json`. Independent audits verify their integrity via:
+     ```bash
+     $ python -m pq_ratchet.web.verify_bundle
+     ```
 - **Formal Verification Scope:** The ProVerif model (`formal_verification/pq_ratchet.pv`) evaluates the symbolic core of the alternating KEM handshake and ratchet turn under a Dolev-Yao quantum adversary with standard cryptographic abstractions (perfect hashing, ideal KEM, unforgeable signatures), modeling confidentiality and injective agreement rather than serving as an end-to-end computational proof of the Python codebase.
 
 ---
@@ -291,3 +297,4 @@ bob_session.close()
 ## 10. License
 
 Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
+

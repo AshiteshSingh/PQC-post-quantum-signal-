@@ -164,9 +164,35 @@ class TestEphemeralWebPQRatchet(unittest.TestCase):
         self.assertEqual(resp.headers.get("Cross-Origin-Opener-Policy"), "same-origin")
         self.assertEqual(resp.headers.get("Cross-Origin-Embedder-Policy"), "require-corp")
         self.assertIn("camera=()", resp.headers.get("Permissions-Policy", ""))
+        # Verify strict CSP has eliminated unsafe-eval
+        csp = resp.headers.get("Content-Security-Policy", "")
+        self.assertNotIn("unsafe-eval", csp)
+        self.assertIn("script-src 'self'", csp)
+
+    def test_standalone_static_endpoints_and_manifest(self):
+        """Verifies root routes for standalone client execution and manifest distribution."""
+        for path, expected_type in [
+            ("/manifest.json", "application/json"),
+            ("/pq-crypto.bundle.js", "application/javascript"),
+            ("/app.js", "application/javascript"),
+            ("/style.css", "text/css"),
+        ]:
+            resp = self.client.get(path)
+            self.assertEqual(resp.status_code, 200, f"Failed on path {path}")
+            self.assertIn(expected_type, resp.headers.get("content-type", ""))
+
+    def test_client_manifest_integrity_verification(self):
+        """Verifies deterministic cryptographic manifest verification for independent client audits."""
+        from pq_ratchet.web.verify_bundle import verify_static_manifest
+        valid, report = verify_static_manifest()
+        self.assertTrue(valid, f"Manifest verification failed: {report}")
+        for asset in ["index.html", "style.css", "pq-crypto.bundle.js", "app.js"]:
+            self.assertIn(asset, report)
+            self.assertIn("VERIFIED", report[asset])
 
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

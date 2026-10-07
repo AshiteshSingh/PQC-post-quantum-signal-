@@ -58,9 +58,9 @@ class ZeroTraceMiddleware(BaseHTTPMiddleware):
         response.headers["X-XSS-Protection"] = "1; mode=block"
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            "script-src 'self' 'unsafe-eval'; "
+            "script-src 'self'; "
             "style-src 'self' 'unsafe-inline'; "
-            "connect-src 'self' ws: wss:; "
+            "connect-src 'self' ws: wss: https: http:; "
             "img-src 'self' data:; "
             "font-src 'self'; "
             "frame-ancestors 'none'; "
@@ -141,6 +141,26 @@ def cleanup_expired_sessions() -> None:
 @app.get("/")
 async def serve_index():
     return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+
+
+@app.get("/pq-crypto.bundle.js")
+async def serve_bundle():
+    return FileResponse(os.path.join(STATIC_DIR, "pq-crypto.bundle.js"), media_type="application/javascript")
+
+
+@app.get("/app.js")
+async def serve_app_js():
+    return FileResponse(os.path.join(STATIC_DIR, "app.js"), media_type="application/javascript")
+
+
+@app.get("/style.css")
+async def serve_style():
+    return FileResponse(os.path.join(STATIC_DIR, "style.css"), media_type="text/css")
+
+
+@app.get("/manifest.json")
+async def serve_manifest():
+    return FileResponse(os.path.join(STATIC_DIR, "manifest.json"), media_type="application/json")
 
 
 @app.get("/api/online-users")

@@ -43,7 +43,15 @@
   const joinForm = document.getElementById("join-form");
   const inputUsername = document.getElementById("input-username");
   const inputPassphrase = document.getElementById("input-passphrase");
+  const inputRelayUrl = document.getElementById("input-relay-url");
   const btnJoinText = document.getElementById("btn-join-text");
+  let configuredRelayHost = "";
+
+  // Prepopulate custom relay endpoint if specified in URL query parameter or localStorage
+  const initialRelayParam = new URLSearchParams(window.location.search).get("relay") || localStorage.getItem("pqc_custom_relay") || "";
+  if (inputRelayUrl && initialRelayParam) {
+    inputRelayUrl.value = initialRelayParam;
+  }
 
   const headerAvatar = document.getElementById("header-avatar");
   const displayPeerName = document.getElementById("display-peer-name");
@@ -150,8 +158,23 @@
 
   // Step 2: Establish Blind WebSocket Relay Connection
   function connectWebSocket(username) {
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${protocol}//${window.location.host}/ws/${encodeURIComponent(username)}`;
+    let customRelay = (inputRelayUrl && inputRelayUrl.value.trim()) || new URLSearchParams(window.location.search).get("relay") || localStorage.getItem("pqc_custom_relay") || "";
+    let wsUrl;
+    if (customRelay) {
+      localStorage.setItem("pqc_custom_relay", customRelay);
+      configuredRelayHost = customRelay;
+      let target = customRelay;
+      if (!target.startsWith("ws://") && !target.startsWith("wss://")) {
+        const protocol = window.location.protocol === "https:" ? "wss://" : "ws:";
+        target = `${protocol}//${target}`;
+      }
+      wsUrl = `${target.replace(/\/+$/, '')}/ws/${encodeURIComponent(username)}`;
+    } else if (window.location.host) {
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      wsUrl = `${protocol}//${window.location.host}/ws/${encodeURIComponent(username)}`;
+    } else {
+      wsUrl = `ws://127.0.0.1:8000/ws/${encodeURIComponent(username)}`;
+    }
 
     ws = new WebSocket(wsUrl);
 
@@ -534,10 +557,19 @@
 
   // Online Users Polling
   function startPollingOnlineDirectory() {
+    let apiBase = "";
+    if (configuredRelayHost) {
+      let httpBase = configuredRelayHost.replace(/^wss:\/\//i, "https://").replace(/^ws:\/\//i, "http://");
+      if (!httpBase.startsWith("http://") && !httpBase.startsWith("https://")) {
+        httpBase = (window.location.protocol === "https:" ? "https://" : "http://") + httpBase;
+      }
+      apiBase = httpBase.replace(/\/+$/, "");
+    }
+
     async function poll() {
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
       try {
-        const resp = await fetch("/api/online-users", { cache: "no-store" });
+        const resp = await fetch(`${apiBase}/api/online-users`, { cache: "no-store" });
         if (resp.ok) {
           const data = await resp.json();
           renderOnlineDirectory(data.users || []);
