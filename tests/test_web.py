@@ -423,6 +423,90 @@ class TestEphemeralWebPQRatchet(unittest.TestCase):
             )
             self.assertTrue(valid_b64, f"Base64 key file verification failed: {report_b64}")
 
+    def test_untrusted_directory_release_key_rejected_by_default(self):
+        """
+        P1 Trust Anchor Security Invariant:
+        Ensures that an adversary who compromises a static asset directory and co-locates
+        a forged manifest, valid signature under an attacker key, and attacker release_key.pub
+        CANNOT cause verify_static_manifest to accept the altered bundle when trusted_pk is None.
+        The verifier MUST default to the pinned embedded trust anchor and reject the forged signature,
+        accepting an external key only when explicitly supplied by the caller.
+        """
+        import tempfile
+        import os
+        import json
+        import base64
+        from pq_ratchet.web.verify_bundle import (
+            verify_static_manifest,
+            compute_asset_digests,
+            resolve_trusted_pk,
+            REQUIRED_CLIENT_ASSETS,
+            DEFAULT_TRUSTED_RELEASE_PK_B64,
+        )
+        from pq_ratchet.primitives.identity import IdentityPrivateKey
+
+        with tempfile.TemporaryDirectory() as td:
+            # 1. Attacker crafts altered client assets
+            files_spec = {}
+            for asset in REQUIRED_CLIENT_ASSETS:
+                p = os.path.join(td, asset)
+                with open(p, "wb") as f:
+                    f.write(f"attacker-backdoored-content-{asset}".encode())
+                sha256, sri, size = compute_asset_digests(p)
+                files_spec[asset] = {"sha256": sha256, "sri_sha384": sri, "bytes": size}
+
+            manifest_bytes = json.dumps({"version": "1.0.0", "files": files_spec}).encode("utf-8")
+            mp = os.path.join(td, "manifest.json")
+            with open(mp, "wb") as f:
+                f.write(manifest_bytes)
+
+            # 2. Attacker generates their own keypair and signs the manifest
+            attacker_sk = IdentityPrivateKey.generate()
+            attacker_pk = attacker_sk.public_key()
+            attacker_sig = attacker_sk.sign(manifest_bytes)
+
+            sig_p = os.path.join(td, "manifest.sig")
+            with open(sig_p, "wb") as f:
+                f.write(attacker_sig)
+
+            # 3. Attacker co-locates their public key as release_key.pub in the asset directory
+            attacker_pub_p = os.path.join(td, "release_key.pub")
+            with open(attacker_pub_p, "wb") as f:
+                f.write(attacker_pk.to_bytes())
+
+            # 4. resolve_trusted_pk with trusted_pk=None MUST return the embedded key, NOT attacker's key
+            resolved_default_pk = resolve_trusted_pk(None, static_dir=td)
+            self.assertIsNotNone(resolved_default_pk)
+            self.assertEqual(
+                resolved_default_pk.to_bytes(),
+                base64.b64decode(DEFAULT_TRUSTED_RELEASE_PK_B64),
+            )
+            self.assertNotEqual(
+                resolved_default_pk.to_bytes(),
+                attacker_pk.to_bytes(),
+            )
+
+            # 5. verify_static_manifest without trusted_pk MUST fail because signature doesn't match embedded key
+            valid, report = verify_static_manifest(
+                static_dir=td,
+                manifest_path=mp,
+                signature_path=sig_p,
+                require_signature=True,
+                trusted_pk=None,
+            )
+            self.assertFalse(valid, "Verifier must reject untrusted directory key when trusted_pk=None")
+            self.assertIn("SIGNATURE_VERIFICATION_FAILED", report.get("manifest_signature", ""))
+
+            # 6. SUT only accepts the external key when explicitly passed via trusted_pk parameter
+            valid_explicit, report_explicit = verify_static_manifest(
+                static_dir=td,
+                manifest_path=mp,
+                signature_path=sig_p,
+                require_signature=True,
+                trusted_pk=attacker_pub_p,
+            )
+            self.assertTrue(valid_explicit, f"Explicit trusted_pk should succeed: {report_explicit}")
+
 
 if __name__ == "__main__":
     unittest.main()

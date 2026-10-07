@@ -76,10 +76,17 @@ def resolve_trusted_pk(
     """
     Resolves an IdentityPublicKey from:
     1. An existing IdentityPublicKey instance.
-    2. A filesystem path to a public key file (containing raw 1952 bytes or base64 text).
-    3. Raw 1952 binary bytes or base64 bytes.
-    4. An inline base64 string.
-    5. Falls back to <static_dir>/release_key.pub if present, or DEFAULT_TRUSTED_RELEASE_PK_B64.
+    2. A filesystem path to a public key file (containing raw 1952 bytes or base64 text)
+       explicitly provided by the caller via trusted_pk.
+    3. Raw 1952 binary bytes or base64 bytes explicitly provided via trusted_pk.
+    4. An inline base64 string explicitly provided via trusted_pk.
+    5. Falls back to DEFAULT_TRUSTED_RELEASE_PK_B64 as the pinned default trust anchor.
+
+    Security Guarantee (Trust Anchor Invariant):
+    Does NOT implicitly load or trust unauthenticated public keys (e.g. release_key.pub)
+    co-located within the target asset directory being verified. Trust anchors must be either
+    embedded (DEFAULT_TRUSTED_RELEASE_PK_B64) or explicitly supplied by the caller through an
+    authenticated out-of-band channel.
     """
     if isinstance(trusted_pk, IdentityPublicKey):
         return trusted_pk
@@ -87,19 +94,10 @@ def resolve_trusted_pk(
     pk_bytes: Optional[bytes] = None
 
     if trusted_pk is None:
-        if static_dir:
-            default_pk_file = os.path.join(static_dir, "release_key.pub")
-            if os.path.isfile(default_pk_file):
-                try:
-                    with open(default_pk_file, "rb") as f:
-                        pk_bytes = f.read()
-                except Exception:
-                    pk_bytes = None
-        if pk_bytes is None:
-            try:
-                pk_bytes = base64.b64decode(DEFAULT_TRUSTED_RELEASE_PK_B64.strip())
-            except Exception:
-                pk_bytes = None
+        try:
+            pk_bytes = base64.b64decode(DEFAULT_TRUSTED_RELEASE_PK_B64.strip())
+        except Exception:
+            pk_bytes = None
     elif isinstance(trusted_pk, bytes):
         pk_bytes = trusted_pk
     elif isinstance(trusted_pk, str):
@@ -369,7 +367,7 @@ def main() -> int:
     parser.add_argument(
         "--trusted-pk",
         default=None,
-        help="File path or base64 string for trusted ML-DSA-65 release public key (default: <dir>/release_key.pub or embedded release key)",
+        help="File path or base64 string for trusted ML-DSA-65 release public key (default: embedded release key)",
     )
 
     args = parser.parse_args()
