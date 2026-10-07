@@ -145,14 +145,17 @@
         </svg>
       </div>
       <h2>PQ-Ratchet Web</h2>
-      <p class="modal-subtitle">Provably quantum-resistant end-to-end encrypted messaging. Ephemeral identity keypairs are sampled directly in your browser.</p>
+      <p class="modal-subtitle">Post-quantum end-to-end encrypted messaging (FIPS 203 ML-KEM-768 &amp; FIPS 204 ML-DSA-65). Long-term identity keys are encrypted at rest under your passphrase with memory-hard scrypt KDF and ChaCha20-Poly1305.</p>
 
       <form id="join-form">
         <div class="form-group">
           <input type="text" id="input-username" class="form-input" placeholder="Choose a username" required autofocus maxlength="25">
         </div>
+        <div class="form-group" style="margin-top: 10px;">
+          <input type="password" id="input-passphrase" class="form-input" placeholder="Passphrase (min 12 characters, encrypts identity key)" required minlength="12" autocomplete="current-password">
+        </div>
         <button type="submit" class="submit-btn" id="btn-join-session">
-          <span id="btn-join-text">Generate Keys & Continue</span>
+          <span id="btn-join-text">Unlock / Generate Keys & Continue</span>
         </button>
       </form>
     </div>

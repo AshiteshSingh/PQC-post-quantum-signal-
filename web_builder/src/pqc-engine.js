@@ -19,6 +19,8 @@ import { sha3_512, sha3_256 } from '@noble/hashes/sha3.js';
 import { hkdf } from '@noble/hashes/hkdf.js';
 import { hmac } from '@noble/hashes/hmac.js';
 import { chacha20poly1305 } from '@noble/ciphers/chacha.js';
+import { pbkdf2 } from '@noble/hashes/pbkdf2.js';
+import { scrypt } from '@noble/hashes/scrypt.js';
 
 // Protocol Constants
 export const MAGIC_BYTES = new Uint8Array([0x50, 0x51, 0x52, 0x54]); // "PQRT"
@@ -264,6 +266,70 @@ export class IdentityPrivateKey {
     const pkBytes = bytes.slice(0, MLDSA65_PUBLIC_KEY_BYTES);
     const skBytes = bytes.slice(MLDSA65_PUBLIC_KEY_BYTES);
     return new IdentityPrivateKey(pkBytes, skBytes);
+  }
+}
+
+export const SCRYPT_N = 65536; // 2^16 (64 MiB RAM cost, memory-hard against GPU/ASIC attacks)
+export const SCRYPT_R = 8;
+export const SCRYPT_P = 1;
+export const PBKDF2_ROUNDS = 600000; // Hardened fallback rounds
+export const IDENTITY_SALT_BYTES = 32;
+export const ENCRYPTION_NONCE_BYTES = 12;
+
+export function encryptIdentityKey(identityKey, passphrase) {
+  const salt = globalThis.crypto.getRandomValues(new Uint8Array(IDENTITY_SALT_BYTES));
+  const nonce = globalThis.crypto.getRandomValues(new Uint8Array(ENCRYPTION_NONCE_BYTES));
+  const passBytes = typeof passphrase === 'string' ? new TextEncoder().encode(passphrase) : new Uint8Array(passphrase);
+  let derivedKey = null;
+  let rawKeyBytes = null;
+  try {
+    derivedKey = scrypt(passBytes, salt, { N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P, dkLen: SYMMETRIC_KEY_BYTES });
+    const cipher = chacha20poly1305(derivedKey, nonce);
+    rawKeyBytes = identityKey.toBytes();
+    const ciphertext = cipher.encrypt(rawKeyBytes);
+    return {
+      kdf: 'scrypt',
+      N: SCRYPT_N,
+      r: SCRYPT_R,
+      p: SCRYPT_P,
+      salt: bytesToBase64(salt),
+      nonce: bytesToBase64(nonce),
+      ciphertext: bytesToBase64(ciphertext),
+      publicKey: bytesToBase64(identityKey.publicKey().toBytes()),
+    };
+  } finally {
+    if (derivedKey) zeroize(derivedKey);
+    if (rawKeyBytes) zeroize(rawKeyBytes);
+    zeroize(passBytes);
+  }
+}
+
+export function decryptIdentityKey(encryptedEnvelope, passphrase) {
+  const salt = base64ToBytes(encryptedEnvelope.salt);
+  const nonce = base64ToBytes(encryptedEnvelope.nonce);
+  const ciphertext = base64ToBytes(encryptedEnvelope.ciphertext);
+  const passBytes = typeof passphrase === 'string' ? new TextEncoder().encode(passphrase) : new Uint8Array(passphrase);
+  let derivedKey = null;
+  let rawKeyBytes = null;
+  try {
+    if (encryptedEnvelope.kdf === 'scrypt' || (!encryptedEnvelope.kdf && encryptedEnvelope.N)) {
+      const N = encryptedEnvelope.N || SCRYPT_N;
+      const r = encryptedEnvelope.r || SCRYPT_R;
+      const p = encryptedEnvelope.p || SCRYPT_P;
+      derivedKey = scrypt(passBytes, salt, { N, r, p, dkLen: SYMMETRIC_KEY_BYTES });
+    } else {
+      const rounds = encryptedEnvelope.rounds || PBKDF2_ROUNDS;
+      derivedKey = pbkdf2(sha3_512, passBytes, salt, { c: rounds, dkLen: SYMMETRIC_KEY_BYTES });
+    }
+    const cipher = chacha20poly1305(derivedKey, nonce);
+    rawKeyBytes = cipher.decrypt(ciphertext);
+    return IdentityPrivateKey.fromBytes(rawKeyBytes);
+  } catch (err) {
+    throw new Error("Failed to decrypt identity key: incorrect passphrase or corrupted storage.");
+  } finally {
+    if (derivedKey) zeroize(derivedKey);
+    if (rawKeyBytes) zeroize(rawKeyBytes);
+    zeroize(passBytes);
   }
 }
 
@@ -966,6 +1032,8 @@ if (typeof window !== 'undefined') {
     base64ToBytes,
     bytesToHex,
     hexToBytes,
+    encryptIdentityKey,
+    decryptIdentityKey,
     zeroize,
     constants: {
       MAGIC_BYTES,

@@ -42,6 +42,7 @@
   const joinModal = document.getElementById("join-modal");
   const joinForm = document.getElementById("join-form");
   const inputUsername = document.getElementById("input-username");
+  const inputPassphrase = document.getElementById("input-passphrase");
   const btnJoinText = document.getElementById("btn-join-text");
 
   const headerAvatar = document.getElementById("header-avatar");
@@ -81,8 +82,13 @@
     e.preventDefault();
     const handle = inputUsername.value.trim();
     if (!handle) return;
+    const passphrase = inputPassphrase ? inputPassphrase.value : "";
+    if (!passphrase || passphrase.length < 12) {
+      alert("Passphrase must be at least 12 characters to securely encrypt your post-quantum identity key at rest.");
+      return;
+    }
 
-    if (btnJoinText) btnJoinText.textContent = "Loading / Sampling Keys...";
+    if (btnJoinText) btnJoinText.textContent = "Deriving Keys (scrypt) & Unlocking...";
 
     // Retrieve or sample ML-DSA-65 identity keypair directly in client memory
     setTimeout(() => {
@@ -90,21 +96,46 @@
         currentUsername = handle;
         currentUserTag.textContent = handle;
 
-        // Long-term Identity Continuity: Retrieve or persist ML-DSA-65 identity keypair
+        // Long-term Identity Continuity: Retrieve or persist encrypted ML-DSA-65 identity keypair
         const identityStorageKey = "pqc_local_identity_" + handle;
-        const savedIdentityB64 = localStorage.getItem(identityStorageKey);
-        if (savedIdentityB64) {
-          try {
-            const rawIdBytes = PQC.base64ToBytes(savedIdentityB64);
-            localIdentity = PQC.IdentityPrivateKey.fromBytes(rawIdBytes);
-          } catch (loadErr) {
+        const savedRecord = localStorage.getItem(identityStorageKey);
+        if (savedRecord) {
+          let loaded = false;
+          // Attempt decrypting JSON encrypted envelope
+          if (savedRecord.startsWith("{")) {
+            try {
+              const envelope = JSON.parse(savedRecord);
+              localIdentity = PQC.decryptIdentityKey(envelope, passphrase);
+              loaded = true;
+            } catch (decryptErr) {
+              throw new Error("Incorrect passphrase or corrupted encrypted identity key for user '" + handle + "'.");
+            }
+          } else {
+            // Legacy unencrypted key migration: read raw key, re-encrypt under passphrase
+            try {
+              const rawIdBytes = PQC.base64ToBytes(savedRecord);
+              localIdentity = PQC.IdentityPrivateKey.fromBytes(rawIdBytes);
+              const envelope = PQC.encryptIdentityKey(localIdentity, passphrase);
+              localStorage.setItem(identityStorageKey, JSON.stringify(envelope));
+              loaded = true;
+            } catch (migErr) {
+              // Corrupted raw key, fallback to fresh generation
+            }
+          }
+
+          if (!loaded) {
             localIdentity = PQC.IdentityPrivateKey.generate();
-            localStorage.setItem(identityStorageKey, PQC.bytesToBase64(localIdentity.toBytes()));
+            const envelope = PQC.encryptIdentityKey(localIdentity, passphrase);
+            localStorage.setItem(identityStorageKey, JSON.stringify(envelope));
           }
         } else {
           localIdentity = PQC.IdentityPrivateKey.generate();
-          localStorage.setItem(identityStorageKey, PQC.bytesToBase64(localIdentity.toBytes()));
+          const envelope = PQC.encryptIdentityKey(localIdentity, passphrase);
+          localStorage.setItem(identityStorageKey, JSON.stringify(envelope));
         }
+
+        // Scrub sensitive passphrase from DOM
+        if (inputPassphrase) inputPassphrase.value = "";
 
         myFingerprintCode.textContent = localIdentity.publicKey().fingerprint();
 
@@ -112,7 +143,7 @@
         connectWebSocket(handle);
       } catch (err) {
         alert("Failed to initialize post-quantum identity: " + err.message);
-        if (btnJoinText) btnJoinText.textContent = "Continue";
+        if (btnJoinText) btnJoinText.textContent = "Unlock / Generate Keys & Continue";
       }
     }, 20);
   });

@@ -1,78 +1,4 @@
-var PQC_MODULE = (() => {
-  var __defProp = Object.defineProperty;
-  var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-  var __getOwnPropNames = Object.getOwnPropertyNames;
-  var __hasOwnProp = Object.prototype.hasOwnProperty;
-  var __export = (target, all) => {
-    for (var name in all)
-      __defProp(target, name, { get: all[name], enumerable: true });
-  };
-  var __copyProps = (to, from, except, desc) => {
-    if (from && typeof from === "object" || typeof from === "function") {
-      for (let key of __getOwnPropNames(from))
-        if (!__hasOwnProp.call(to, key) && key !== except)
-          __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-    }
-    return to;
-  };
-  var __toCommonJS = (mod2) => __copyProps(__defProp({}, "__esModule", { value: true }), mod2);
-
-  // src/pqc-engine.js
-  var pqc_engine_exports = {};
-  __export(pqc_engine_exports, {
-    AEAD_NONCE_BYTES: () => AEAD_NONCE_BYTES,
-    AEAD_TAG_BYTES: () => AEAD_TAG_BYTES,
-    CHAIN_KEY_BYTES: () => CHAIN_KEY_BYTES,
-    DOMAIN_ASYM_RATCHET: () => DOMAIN_ASYM_RATCHET,
-    DOMAIN_AUTH_INITIATOR: () => DOMAIN_AUTH_INITIATOR,
-    DOMAIN_AUTH_RESPONDER: () => DOMAIN_AUTH_RESPONDER,
-    DOMAIN_AUTH_TRANSCRIPT: () => DOMAIN_AUTH_TRANSCRIPT,
-    DOMAIN_CHAIN_ADVANCE: () => DOMAIN_CHAIN_ADVANCE,
-    DOMAIN_HYBRID_KEM: () => DOMAIN_HYBRID_KEM,
-    DOMAIN_MESSAGE_KEY: () => DOMAIN_MESSAGE_KEY,
-    DOMAIN_ROOT_INIT: () => DOMAIN_ROOT_INIT,
-    HandshakeInitPacket: () => HandshakeInitPacket,
-    HandshakeRespPacket: () => HandshakeRespPacket,
-    HybridKEMCiphertext: () => HybridKEMCiphertext,
-    HybridKEMPrivateKey: () => HybridKEMPrivateKey,
-    HybridKEMPublicKey: () => HybridKEMPublicKey,
-    IdentityPrivateKey: () => IdentityPrivateKey,
-    IdentityPublicKey: () => IdentityPublicKey,
-    MAGIC_BYTES: () => MAGIC_BYTES,
-    MAX_PACKET_PAYLOAD_BYTES: () => MAX_PACKET_PAYLOAD_BYTES,
-    MAX_RATCHET_SKIP_GAP: () => MAX_RATCHET_SKIP_GAP,
-    MAX_SKIPPED_KEYS_CACHE: () => MAX_SKIPPED_KEYS_CACHE,
-    MLDSA65_PUBLIC_KEY_BYTES: () => MLDSA65_PUBLIC_KEY_BYTES,
-    MLDSA65_SECRET_KEY_BYTES: () => MLDSA65_SECRET_KEY_BYTES,
-    MLDSA65_SIGNATURE_BYTES: () => MLDSA65_SIGNATURE_BYTES,
-    MLKEM768_CIPHERTEXT_BYTES: () => MLKEM768_CIPHERTEXT_BYTES,
-    MLKEM768_PUBLIC_KEY_BYTES: () => MLKEM768_PUBLIC_KEY_BYTES,
-    MLKEM768_SHARED_SECRET_BYTES: () => MLKEM768_SHARED_SECRET_BYTES,
-    MSG_TYPE_HANDSHAKE_INIT: () => MSG_TYPE_HANDSHAKE_INIT,
-    MSG_TYPE_HANDSHAKE_RESP: () => MSG_TYPE_HANDSHAKE_RESP,
-    MSG_TYPE_RATCHET_DATA: () => MSG_TYPE_RATCHET_DATA,
-    MSG_TYPE_TERMINATE: () => MSG_TYPE_TERMINATE,
-    PQRatchetSession: () => PQRatchetSession,
-    PROTOCOL_VERSION: () => PROTOCOL_VERSION,
-    ROOT_KEY_BYTES: () => ROOT_KEY_BYTES,
-    RatchetDataPacket: () => RatchetDataPacket,
-    SYMMETRIC_KEY_BYTES: () => SYMMETRIC_KEY_BYTES,
-    X25519_KEY_BYTES: () => X25519_KEY_BYTES,
-    X25519_SHARED_SECRET_BYTES: () => X25519_SHARED_SECRET_BYTES,
-    asymmetric_ratchet_kdf: () => asymmetric_ratchet_kdf,
-    base64ToBytes: () => base64ToBytes,
-    bytesToBase64: () => bytesToBase64,
-    bytesToHex: () => bytesToHex3,
-    computeInitiatorTranscript: () => computeInitiatorTranscript,
-    computeResponderTranscript: () => computeResponderTranscript,
-    concatBytes: () => concatBytes3,
-    constantTimeCompare: () => constantTimeCompare,
-    dual_prf_combine: () => dual_prf_combine,
-    hexToBytes: () => hexToBytes3,
-    symmetric_chain_step: () => symmetric_chain_step,
-    zeroize: () => zeroize
-  });
-
+(() => {
   // node_modules/@noble/hashes/_u64.js
   var U32_MASK64 = /* @__PURE__ */ (() => BigInt(2 ** 32 - 1))();
   var _32n = /* @__PURE__ */ BigInt(32);
@@ -90,6 +16,14 @@ var PQC_MODULE = (() => {
       [Ah[i], Al[i]] = [h, l];
     }
     return [Ah, Al];
+  }
+  var fromNumH = (n) => n / 2 ** 32 | 0;
+  var fromNumL = (n) => n >>> 0;
+  function setU64FromNum(view, byteOffset, n, isLE3) {
+    const h = fromNumH(n);
+    const l = fromNumL(n);
+    view.setUint32(byteOffset, isLE3 ? l : h, isLE3);
+    view.setUint32(byteOffset + 4, isLE3 ? h : l, isLE3);
   }
 
   // node_modules/@noble/hashes/utils.js
@@ -163,6 +97,15 @@ var PQC_MODULE = (() => {
       arrays[i].fill(0);
     }
   }
+  function createView(arr) {
+    return new DataView(arr.buffer, arr.byteOffset, arr.byteLength);
+  }
+  function rotr(word, shift) {
+    return word << 32 - shift | word >>> shift;
+  }
+  function rotl(word, shift) {
+    return word << shift | word >>> 32 - shift >>> 0;
+  }
   var isLE = /* @__PURE__ */ (() => new Uint8Array(new Uint32Array([287454020]).buffer)[0] === 68)();
   function byteSwap(word) {
     return word << 24 & 4278190080 | word << 8 & 16711680 | word >>> 8 & 65280 | word >>> 24 & 255;
@@ -219,6 +162,21 @@ var PQC_MODULE = (() => {
       array[ai] = n1 * 16 + n2;
     }
     return array;
+  }
+  function utf8ToBytes(str) {
+    if (typeof str !== "string")
+      throw new TypeError("string expected");
+    const encoded = new TextEncoder().encode(str);
+    try {
+      return new Uint8Array(encoded);
+    } finally {
+      clean(encoded);
+    }
+  }
+  function kdfInputToBytes(data, errorTitle = "") {
+    if (typeof data === "string")
+      return utf8ToBytes(data);
+    return abytes(data, void 0, errorTitle);
   }
   function concatBytes(...arrays) {
     let sum = 0;
@@ -2422,6 +2380,284 @@ var PQC_MODULE = (() => {
     securityLevel: 192
   }))();
 
+  // node_modules/@noble/hashes/_md.js
+  function Chi(a, b, c) {
+    return a & b ^ ~a & c;
+  }
+  function Maj(a, b, c) {
+    return a & b ^ a & c ^ b & c;
+  }
+  var HashMD = class {
+    blockLen;
+    outputLen;
+    canXOF = false;
+    padOffset;
+    isLE;
+    // For partial updates less than block size
+    buffer;
+    view;
+    finished = false;
+    length = 0;
+    pos = 0;
+    destroyed = false;
+    constructor(blockLen, outputLen, padOffset, isLE3) {
+      this.blockLen = blockLen;
+      this.outputLen = outputLen;
+      this.padOffset = padOffset;
+      this.isLE = isLE3;
+      this.buffer = new Uint8Array(blockLen);
+      this.view = createView(this.buffer);
+    }
+    update(data) {
+      aexists(this);
+      abytes(data);
+      const { view, buffer, blockLen } = this;
+      const len = data.length;
+      let processed = false;
+      for (let pos = 0; pos < len; ) {
+        const take = Math.min(blockLen - this.pos, len - pos);
+        if (take === blockLen) {
+          const dataView = createView(data);
+          for (; blockLen <= len - pos; pos += blockLen)
+            this.process(dataView, pos);
+          processed = true;
+          continue;
+        }
+        buffer.set(pos === 0 && take === len ? data : data.subarray(pos, pos + take), this.pos);
+        this.pos += take;
+        pos += take;
+        if (this.pos === blockLen) {
+          this.process(view, 0);
+          this.pos = 0;
+          processed = true;
+        }
+      }
+      this.length += data.length;
+      if (processed)
+        this.roundClean();
+      return this;
+    }
+    digestInto(out) {
+      aexists(this);
+      aoutput(out, this);
+      this.finished = true;
+      const { buffer, view, blockLen, isLE: isLE3 } = this;
+      let { pos } = this;
+      buffer[pos++] = 128;
+      buffer.fill(0, pos);
+      if (this.padOffset > blockLen - pos) {
+        this.process(view, 0);
+        buffer.fill(0);
+      }
+      setU64FromNum(view, blockLen - 8, this.length * 8, isLE3);
+      this.process(view, 0);
+      this.roundClean();
+      const oview = out === buffer ? view : createView(out);
+      const len = this.outputLen;
+      const outLen = len / 4;
+      const state = this.get();
+      if (len % 4 || outLen > state.length)
+        throw new Error("invalid outputLen");
+      for (let i = 0; i < outLen; i++)
+        oview.setUint32(4 * i, state[i], isLE3);
+    }
+    digest() {
+      const { buffer, outputLen } = this;
+      this.digestInto(buffer);
+      const res = buffer.slice(0, outputLen);
+      this.destroy();
+      return res;
+    }
+    _cloneIntoMeta(to) {
+      const { buffer, length, finished, destroyed, pos } = this;
+      to.destroyed = destroyed;
+      to.finished = finished;
+      to.length = length;
+      to.pos = pos;
+      if (pos)
+        to.buffer.set(buffer);
+      return to;
+    }
+    clone() {
+      return this._cloneInto();
+    }
+  };
+  var SHA256_IV = /* @__PURE__ */ Uint32Array.from([
+    1779033703,
+    3144134277,
+    1013904242,
+    2773480762,
+    1359893119,
+    2600822924,
+    528734635,
+    1541459225
+  ]);
+
+  // node_modules/@noble/hashes/sha2.js
+  var SHA256_K = /* @__PURE__ */ Uint32Array.from([
+    1116352408,
+    1899447441,
+    3049323471,
+    3921009573,
+    961987163,
+    1508970993,
+    2453635748,
+    2870763221,
+    3624381080,
+    310598401,
+    607225278,
+    1426881987,
+    1925078388,
+    2162078206,
+    2614888103,
+    3248222580,
+    3835390401,
+    4022224774,
+    264347078,
+    604807628,
+    770255983,
+    1249150122,
+    1555081692,
+    1996064986,
+    2554220882,
+    2821834349,
+    2952996808,
+    3210313671,
+    3336571891,
+    3584528711,
+    113926993,
+    338241895,
+    666307205,
+    773529912,
+    1294757372,
+    1396182291,
+    1695183700,
+    1986661051,
+    2177026350,
+    2456956037,
+    2730485921,
+    2820302411,
+    3259730800,
+    3345764771,
+    3516065817,
+    3600352804,
+    4094571909,
+    275423344,
+    430227734,
+    506948616,
+    659060556,
+    883997877,
+    958139571,
+    1322822218,
+    1537002063,
+    1747873779,
+    1955562222,
+    2024104815,
+    2227730452,
+    2361852424,
+    2428436474,
+    2756734187,
+    3204031479,
+    3329325298
+  ]);
+  var SHA256_W = /* @__PURE__ */ new Uint32Array(64);
+  var SHA2_32B = class extends HashMD {
+    // We cannot use array here since array allows indexing by variable
+    // which means optimizer/compiler cannot use registers.
+    // Numeric initializers matter: starting the fields as `undefined` changes
+    // V8's field representation and makes sha256 3x slower (measured).
+    A = 0;
+    B = 0;
+    C = 0;
+    D = 0;
+    E = 0;
+    F = 0;
+    G = 0;
+    H = 0;
+    constructor(outputLen, IV) {
+      super(64, outputLen, 8, false);
+      this.A = IV[0] | 0;
+      this.B = IV[1] | 0;
+      this.C = IV[2] | 0;
+      this.D = IV[3] | 0;
+      this.E = IV[4] | 0;
+      this.F = IV[5] | 0;
+      this.G = IV[6] | 0;
+      this.H = IV[7] | 0;
+    }
+    get() {
+      const { A, B: B2, C, D: D2, E, F: F3, G, H } = this;
+      return [A, B2, C, D2, E, F3, G, H];
+    }
+    // prettier-ignore
+    set(A, B2, C, D2, E, F3, G, H) {
+      this.A = A | 0;
+      this.B = B2 | 0;
+      this.C = C | 0;
+      this.D = D2 | 0;
+      this.E = E | 0;
+      this.F = F3 | 0;
+      this.G = G | 0;
+      this.H = H | 0;
+    }
+    _cloneInto(to) {
+      (to ||= new this.constructor()).set(...this.get());
+      return this._cloneIntoMeta(to);
+    }
+    process(view, offset) {
+      for (let i = 0; i < 16; i++, offset += 4)
+        SHA256_W[i] = view.getUint32(offset, false);
+      for (let i = 16; i < 64; i++) {
+        const W15 = SHA256_W[i - 15];
+        const W2 = SHA256_W[i - 2];
+        const s0 = rotr(W15, 7) ^ rotr(W15, 18) ^ W15 >>> 3;
+        const s1 = rotr(W2, 17) ^ rotr(W2, 19) ^ W2 >>> 10;
+        SHA256_W[i] = s1 + SHA256_W[i - 7] + s0 + SHA256_W[i - 16] | 0;
+      }
+      let { A, B: B2, C, D: D2, E, F: F3, G, H } = this;
+      for (let i = 0; i < 64; i++) {
+        const sigma1 = rotr(E, 6) ^ rotr(E, 11) ^ rotr(E, 25);
+        const T1 = H + sigma1 + Chi(E, F3, G) + SHA256_K[i] + SHA256_W[i] | 0;
+        const sigma0 = rotr(A, 2) ^ rotr(A, 13) ^ rotr(A, 22);
+        const T2 = sigma0 + Maj(A, B2, C) | 0;
+        H = G;
+        G = F3;
+        F3 = E;
+        E = D2 + T1 | 0;
+        D2 = C;
+        C = B2;
+        B2 = A;
+        A = T1 + T2 | 0;
+      }
+      A = A + this.A | 0;
+      B2 = B2 + this.B | 0;
+      C = C + this.C | 0;
+      D2 = D2 + this.D | 0;
+      E = E + this.E | 0;
+      F3 = F3 + this.F | 0;
+      G = G + this.G | 0;
+      H = H + this.H | 0;
+      this.set(A, B2, C, D2, E, F3, G, H);
+    }
+    roundClean() {
+      clean(SHA256_W);
+    }
+    destroy() {
+      this.destroyed = true;
+      this.set(0, 0, 0, 0, 0, 0, 0, 0);
+      clean(this.buffer);
+    }
+  };
+  var _SHA256 = class extends SHA2_32B {
+    constructor() {
+      super(32, SHA256_IV);
+    }
+  };
+  var sha256 = /* @__PURE__ */ createHasher(
+    () => new _SHA256(),
+    /* @__PURE__ */ oidNist(1)
+  );
+
   // node_modules/@noble/curves/abstract/curve.js
   var _0n4 = /* @__PURE__ */ BigInt(0);
   var _1n4 = /* @__PURE__ */ BigInt(1);
@@ -3529,7 +3765,7 @@ var PQC_MODULE = (() => {
       arrays[i].fill(0);
     }
   }
-  function createView(arr) {
+  function createView2(arr) {
     return new DataView(arr.buffer, arr.byteOffset, arr.byteLength);
   }
   var isLE2 = /* @__PURE__ */ (() => new Uint8Array(new Uint32Array([287454020]).buffer)[0] === 68)();
@@ -3640,7 +3876,7 @@ var PQC_MODULE = (() => {
     anumber3(aadLength);
     abool3(isLE3);
     const num = new Uint8Array(16);
-    const view = createView(num);
+    const view = createView2(num);
     view.setBigUint64(0, BigInt(aadLength), isLE3);
     view.setBigUint64(8, BigInt(dataLength), isLE3);
     return num;
@@ -3656,7 +3892,7 @@ var PQC_MODULE = (() => {
   var encodeStr = (str) => Uint8Array.from(str.split(""), (c) => c.charCodeAt(0));
   var sigma16_32 = /* @__PURE__ */ (() => swap32IfBE2(u322(encodeStr("expand 16-byte k"))))();
   var sigma32_32 = /* @__PURE__ */ (() => swap32IfBE2(u322(encodeStr("expand 32-byte k"))))();
-  function rotl(a, b) {
+  function rotl2(a, b) {
     return a << b | a >>> 32 - b;
   }
   var BLOCK_LEN = 64;
@@ -4039,69 +4275,69 @@ var PQC_MODULE = (() => {
     let x00 = y00, x01 = y01, x02 = y02, x03 = y03, x04 = y04, x05 = y05, x06 = y06, x07 = y07, x08 = y08, x09 = y09, x10 = y10, x11 = y11, x12 = y12, x13 = y13, x14 = y14, x15 = y15;
     for (let r = 0; r < rounds; r += 2) {
       x00 = x00 + x04 | 0;
-      x12 = rotl(x12 ^ x00, 16);
+      x12 = rotl2(x12 ^ x00, 16);
       x08 = x08 + x12 | 0;
-      x04 = rotl(x04 ^ x08, 12);
+      x04 = rotl2(x04 ^ x08, 12);
       x00 = x00 + x04 | 0;
-      x12 = rotl(x12 ^ x00, 8);
+      x12 = rotl2(x12 ^ x00, 8);
       x08 = x08 + x12 | 0;
-      x04 = rotl(x04 ^ x08, 7);
+      x04 = rotl2(x04 ^ x08, 7);
       x01 = x01 + x05 | 0;
-      x13 = rotl(x13 ^ x01, 16);
+      x13 = rotl2(x13 ^ x01, 16);
       x09 = x09 + x13 | 0;
-      x05 = rotl(x05 ^ x09, 12);
+      x05 = rotl2(x05 ^ x09, 12);
       x01 = x01 + x05 | 0;
-      x13 = rotl(x13 ^ x01, 8);
+      x13 = rotl2(x13 ^ x01, 8);
       x09 = x09 + x13 | 0;
-      x05 = rotl(x05 ^ x09, 7);
+      x05 = rotl2(x05 ^ x09, 7);
       x02 = x02 + x06 | 0;
-      x14 = rotl(x14 ^ x02, 16);
+      x14 = rotl2(x14 ^ x02, 16);
       x10 = x10 + x14 | 0;
-      x06 = rotl(x06 ^ x10, 12);
+      x06 = rotl2(x06 ^ x10, 12);
       x02 = x02 + x06 | 0;
-      x14 = rotl(x14 ^ x02, 8);
+      x14 = rotl2(x14 ^ x02, 8);
       x10 = x10 + x14 | 0;
-      x06 = rotl(x06 ^ x10, 7);
+      x06 = rotl2(x06 ^ x10, 7);
       x03 = x03 + x07 | 0;
-      x15 = rotl(x15 ^ x03, 16);
+      x15 = rotl2(x15 ^ x03, 16);
       x11 = x11 + x15 | 0;
-      x07 = rotl(x07 ^ x11, 12);
+      x07 = rotl2(x07 ^ x11, 12);
       x03 = x03 + x07 | 0;
-      x15 = rotl(x15 ^ x03, 8);
+      x15 = rotl2(x15 ^ x03, 8);
       x11 = x11 + x15 | 0;
-      x07 = rotl(x07 ^ x11, 7);
+      x07 = rotl2(x07 ^ x11, 7);
       x00 = x00 + x05 | 0;
-      x15 = rotl(x15 ^ x00, 16);
+      x15 = rotl2(x15 ^ x00, 16);
       x10 = x10 + x15 | 0;
-      x05 = rotl(x05 ^ x10, 12);
+      x05 = rotl2(x05 ^ x10, 12);
       x00 = x00 + x05 | 0;
-      x15 = rotl(x15 ^ x00, 8);
+      x15 = rotl2(x15 ^ x00, 8);
       x10 = x10 + x15 | 0;
-      x05 = rotl(x05 ^ x10, 7);
+      x05 = rotl2(x05 ^ x10, 7);
       x01 = x01 + x06 | 0;
-      x12 = rotl(x12 ^ x01, 16);
+      x12 = rotl2(x12 ^ x01, 16);
       x11 = x11 + x12 | 0;
-      x06 = rotl(x06 ^ x11, 12);
+      x06 = rotl2(x06 ^ x11, 12);
       x01 = x01 + x06 | 0;
-      x12 = rotl(x12 ^ x01, 8);
+      x12 = rotl2(x12 ^ x01, 8);
       x11 = x11 + x12 | 0;
-      x06 = rotl(x06 ^ x11, 7);
+      x06 = rotl2(x06 ^ x11, 7);
       x02 = x02 + x07 | 0;
-      x13 = rotl(x13 ^ x02, 16);
+      x13 = rotl2(x13 ^ x02, 16);
       x08 = x08 + x13 | 0;
-      x07 = rotl(x07 ^ x08, 12);
+      x07 = rotl2(x07 ^ x08, 12);
       x02 = x02 + x07 | 0;
-      x13 = rotl(x13 ^ x02, 8);
+      x13 = rotl2(x13 ^ x02, 8);
       x08 = x08 + x13 | 0;
-      x07 = rotl(x07 ^ x08, 7);
+      x07 = rotl2(x07 ^ x08, 7);
       x03 = x03 + x04 | 0;
-      x14 = rotl(x14 ^ x03, 16);
+      x14 = rotl2(x14 ^ x03, 16);
       x09 = x09 + x14 | 0;
-      x04 = rotl(x04 ^ x09, 12);
+      x04 = rotl2(x04 ^ x09, 12);
       x03 = x03 + x04 | 0;
-      x14 = rotl(x14 ^ x03, 8);
+      x14 = rotl2(x14 ^ x03, 8);
       x09 = x09 + x14 | 0;
-      x04 = rotl(x04 ^ x09, 7);
+      x04 = rotl2(x04 ^ x09, 7);
     }
     let oi = 0;
     out[oi++] = y00 + x00 | 0;
@@ -4182,6 +4418,239 @@ var PQC_MODULE = (() => {
     { blockSize: 64, nonceLength: 12, tagLength: 16, withAAD: true },
     /* @__PURE__ */ _poly1305_aead(chacha20)
   );
+
+  // node_modules/@noble/hashes/pbkdf2.js
+  function pbkdf2Init(hash, _password, _salt, _opts) {
+    ahash(hash);
+    const opts2 = checkOpts({ dkLen: 32, asyncTick: 10 }, _opts);
+    const { c, dkLen, asyncTick } = opts2;
+    anumber(c, "c");
+    anumber(dkLen, "dkLen");
+    anumber(asyncTick, "asyncTick");
+    if (c < 1)
+      throw new Error('"c" (iterations) must be >= 1');
+    if (dkLen < 1)
+      throw new Error('"dkLen" must be >= 1');
+    if (dkLen > (2 ** 32 - 1) * hash.outputLen)
+      throw new Error("derived key too long");
+    const p = kdfInputToBytes(_password, "password");
+    try {
+      const s = kdfInputToBytes(_salt, "salt");
+      try {
+        const DK = new Uint8Array(dkLen);
+        const { iHash, oHash, outputLen } = hmac.create(hash, p);
+        const u = new Uint8Array(outputLen);
+        const eng = pbkdf2Engine(iHash, oHash, s, u);
+        return { c, dkLen, asyncTick, DK, outputLen, eng };
+      } finally {
+        if (typeof _salt === "string")
+          clean(s);
+      }
+    } finally {
+      if (typeof _password === "string")
+        clean(p);
+    }
+  }
+  function pbkdf2Engine(iHash, oHash, salt, u) {
+    const counter = new Uint8Array(4);
+    const view = createView(counter);
+    const salted = iHash._cloneInto().update(salt);
+    const work = oHash._cloneInto();
+    const iClone = iHash._cloneInto;
+    const oClone = oHash._cloneInto;
+    return {
+      u1: (ti, Ti) => {
+        view.setInt32(0, ti, false);
+        salted._cloneInto(work).update(counter).digestInto(u);
+        oHash._cloneInto(work).update(u).digestInto(u);
+        Ti.set(u.subarray(0, Ti.length));
+      },
+      // Whole `F` inner loop for the sync variant: one optimized function owns the hot loop.
+      rounds: (c, Ti) => {
+        for (let ui = 1; ui < c; ui++) {
+          iClone.call(iHash, work).update(u).digestInto(u);
+          oClone.call(oHash, work).update(u).digestInto(u);
+          for (let i = 0; i < Ti.length; i++)
+            Ti[i] ^= u[i];
+        }
+      },
+      output: (DK) => {
+        iHash.destroy();
+        oHash.destroy();
+        salted.destroy();
+        work.destroy();
+        clean(u);
+        return DK;
+      }
+    };
+  }
+  function pbkdf2(hash, password, salt, opts2) {
+    const { c, dkLen, DK, outputLen, eng } = pbkdf2Init(hash, password, salt, opts2);
+    for (let ti = 1, pos = 0; pos < dkLen; ti++, pos += outputLen) {
+      const Ti = DK.subarray(pos, pos + outputLen);
+      eng.u1(ti, Ti);
+      eng.rounds(c, Ti);
+    }
+    return eng.output(DK);
+  }
+
+  // node_modules/@noble/hashes/scrypt.js
+  function XorAndSalsa(prev, pi, input, ii, out, oi) {
+    let y00 = prev[pi++] ^ input[ii++], y01 = prev[pi++] ^ input[ii++];
+    let y02 = prev[pi++] ^ input[ii++], y03 = prev[pi++] ^ input[ii++];
+    let y04 = prev[pi++] ^ input[ii++], y05 = prev[pi++] ^ input[ii++];
+    let y06 = prev[pi++] ^ input[ii++], y07 = prev[pi++] ^ input[ii++];
+    let y08 = prev[pi++] ^ input[ii++], y09 = prev[pi++] ^ input[ii++];
+    let y10 = prev[pi++] ^ input[ii++], y11 = prev[pi++] ^ input[ii++];
+    let y12 = prev[pi++] ^ input[ii++], y13 = prev[pi++] ^ input[ii++];
+    let y14 = prev[pi++] ^ input[ii++], y15 = prev[pi++] ^ input[ii++];
+    let x00 = y00, x01 = y01, x02 = y02, x03 = y03, x04 = y04, x05 = y05, x06 = y06, x07 = y07, x08 = y08, x09 = y09, x10 = y10, x11 = y11, x12 = y12, x13 = y13, x14 = y14, x15 = y15;
+    for (let i = 0; i < 8; i += 2) {
+      x04 ^= rotl(x00 + x12 | 0, 7);
+      x08 ^= rotl(x04 + x00 | 0, 9);
+      x12 ^= rotl(x08 + x04 | 0, 13);
+      x00 ^= rotl(x12 + x08 | 0, 18);
+      x09 ^= rotl(x05 + x01 | 0, 7);
+      x13 ^= rotl(x09 + x05 | 0, 9);
+      x01 ^= rotl(x13 + x09 | 0, 13);
+      x05 ^= rotl(x01 + x13 | 0, 18);
+      x14 ^= rotl(x10 + x06 | 0, 7);
+      x02 ^= rotl(x14 + x10 | 0, 9);
+      x06 ^= rotl(x02 + x14 | 0, 13);
+      x10 ^= rotl(x06 + x02 | 0, 18);
+      x03 ^= rotl(x15 + x11 | 0, 7);
+      x07 ^= rotl(x03 + x15 | 0, 9);
+      x11 ^= rotl(x07 + x03 | 0, 13);
+      x15 ^= rotl(x11 + x07 | 0, 18);
+      x01 ^= rotl(x00 + x03 | 0, 7);
+      x02 ^= rotl(x01 + x00 | 0, 9);
+      x03 ^= rotl(x02 + x01 | 0, 13);
+      x00 ^= rotl(x03 + x02 | 0, 18);
+      x06 ^= rotl(x05 + x04 | 0, 7);
+      x07 ^= rotl(x06 + x05 | 0, 9);
+      x04 ^= rotl(x07 + x06 | 0, 13);
+      x05 ^= rotl(x04 + x07 | 0, 18);
+      x11 ^= rotl(x10 + x09 | 0, 7);
+      x08 ^= rotl(x11 + x10 | 0, 9);
+      x09 ^= rotl(x08 + x11 | 0, 13);
+      x10 ^= rotl(x09 + x08 | 0, 18);
+      x12 ^= rotl(x15 + x14 | 0, 7);
+      x13 ^= rotl(x12 + x15 | 0, 9);
+      x14 ^= rotl(x13 + x12 | 0, 13);
+      x15 ^= rotl(x14 + x13 | 0, 18);
+    }
+    out[oi++] = y00 + x00 | 0;
+    out[oi++] = y01 + x01 | 0;
+    out[oi++] = y02 + x02 | 0;
+    out[oi++] = y03 + x03 | 0;
+    out[oi++] = y04 + x04 | 0;
+    out[oi++] = y05 + x05 | 0;
+    out[oi++] = y06 + x06 | 0;
+    out[oi++] = y07 + x07 | 0;
+    out[oi++] = y08 + x08 | 0;
+    out[oi++] = y09 + x09 | 0;
+    out[oi++] = y10 + x10 | 0;
+    out[oi++] = y11 + x11 | 0;
+    out[oi++] = y12 + x12 | 0;
+    out[oi++] = y13 + x13 | 0;
+    out[oi++] = y14 + x14 | 0;
+    out[oi++] = y15 + x15 | 0;
+  }
+  function BlockMix(input, ii, out, oi, r) {
+    let head = oi + 0;
+    let tail = oi + 16 * r;
+    for (let i = 0; i < 16; i++)
+      out[tail + i] = input[ii + (2 * r - 1) * 16 + i];
+    for (let i = 0; i < r; i++, head += 16, ii += 16) {
+      XorAndSalsa(out, tail, input, ii, out, head);
+      if (i > 0)
+        tail += 16;
+      XorAndSalsa(out, head, input, ii += 16, out, tail);
+    }
+  }
+  var SCRYPT_DEFAULT_MAXMEM = 128 * 8 * (2 ** 20 + 1 + 1);
+  function scryptInit(password, salt, _opts) {
+    const opts2 = checkOpts({
+      dkLen: 32,
+      asyncTick: 10,
+      maxmem: SCRYPT_DEFAULT_MAXMEM
+    }, _opts);
+    const { N: N3, r, p, dkLen, asyncTick, maxmem, onProgress } = opts2;
+    anumber(N3, "N");
+    anumber(r, "r");
+    anumber(p, "p");
+    anumber(dkLen, "dkLen");
+    anumber(asyncTick, "asyncTick");
+    anumber(maxmem, "maxmem");
+    if (onProgress !== void 0 && typeof onProgress !== "function")
+      throw new Error('"onProgress" must be a function');
+    if (r < 1)
+      throw new Error('"r" expected integer >= 1');
+    const blockSize = 128 * r;
+    const blockSize32 = blockSize / 4;
+    const pow32 = Math.pow(2, 32);
+    if (N3 <= 1 || (N3 & N3 - 1) !== 0 || N3 > pow32)
+      throw new Error('"N" expected a power of 2, and 2^1 <= N <= 2^32');
+    if (p < 1 || p > (pow32 - 1) * 32 / blockSize)
+      throw new Error('"p" expected integer 1..((2^32 - 1) * 32) / (128 * r)');
+    if (dkLen < 1 || dkLen > (pow32 - 1) * 32)
+      throw new Error('"dkLen" expected integer 1..(2^32 - 1) * 32');
+    const memUsed = blockSize * (N3 + p + 1);
+    if (memUsed > maxmem)
+      throw new Error('"maxmem" limit was hit: memUsed(128*r*(N+p+1))=' + memUsed + ", maxmem=" + maxmem);
+    const B2 = pbkdf2(sha256, password, salt, { c: 1, dkLen: blockSize * p });
+    const B32 = u32(B2);
+    const V = u32(new Uint8Array(blockSize * N3));
+    const tmp = u32(new Uint8Array(blockSize));
+    let blockMixCb = () => {
+    };
+    if (onProgress) {
+      const totalBlockMix = 2 * N3 * p;
+      const callbackPer = Math.max(Math.floor(totalBlockMix / 1e4), 1);
+      let blockMixCnt = 0;
+      blockMixCb = () => {
+        blockMixCnt++;
+        if (onProgress && (!(blockMixCnt % callbackPer) || blockMixCnt === totalBlockMix)) {
+          try {
+            onProgress(blockMixCnt / totalBlockMix);
+          } catch (e) {
+            clean(B2, V, tmp);
+            throw e;
+          }
+        }
+      };
+    }
+    return { N: N3, r, p, dkLen, blockSize32, V, B32, B: B2, tmp, blockMixCb, asyncTick };
+  }
+  function scryptOutput(password, dkLen, B2, V, tmp) {
+    const res = pbkdf2(sha256, password, B2, { c: 1, dkLen });
+    clean(B2, V, tmp);
+    return res;
+  }
+  function scrypt(password, salt, opts2) {
+    const { N: N3, r, p, dkLen, blockSize32, V, B32, B: B2, tmp, blockMixCb } = scryptInit(password, salt, opts2);
+    swap32IfBE(B32);
+    for (let pi = 0; pi < p; pi++) {
+      const Pi = blockSize32 * pi;
+      for (let i = 0; i < blockSize32; i++)
+        V[i] = B32[Pi + i];
+      for (let i = 0, pos = 0; i < N3 - 1; i++) {
+        BlockMix(V, pos, V, pos += blockSize32, r);
+        blockMixCb();
+      }
+      BlockMix(V, (N3 - 1) * blockSize32, B32, Pi, r);
+      blockMixCb();
+      for (let i = 0; i < N3; i++) {
+        const j = (B32[Pi + blockSize32 - 16] & N3 - 1) >>> 0;
+        for (let k = 0; k < blockSize32; k++)
+          tmp[k] = B32[Pi + k] ^ V[j * blockSize32 + k];
+        BlockMix(tmp, 0, B32, Pi, r);
+        blockMixCb();
+      }
+    }
+    swap32IfBE(B32);
+    return scryptOutput(password, dkLen, B2, V, tmp);
+  }
 
   // src/pqc-engine.js
   var MAGIC_BYTES = new Uint8Array([80, 81, 82, 84]);
@@ -4390,6 +4859,67 @@ var PQC_MODULE = (() => {
       return new _IdentityPrivateKey(pkBytes, skBytes);
     }
   };
+  var SCRYPT_N = 65536;
+  var SCRYPT_R = 8;
+  var SCRYPT_P = 1;
+  var PBKDF2_ROUNDS = 6e5;
+  var IDENTITY_SALT_BYTES = 32;
+  var ENCRYPTION_NONCE_BYTES = 12;
+  function encryptIdentityKey(identityKey, passphrase) {
+    const salt = globalThis.crypto.getRandomValues(new Uint8Array(IDENTITY_SALT_BYTES));
+    const nonce = globalThis.crypto.getRandomValues(new Uint8Array(ENCRYPTION_NONCE_BYTES));
+    const passBytes = typeof passphrase === "string" ? new TextEncoder().encode(passphrase) : new Uint8Array(passphrase);
+    let derivedKey = null;
+    let rawKeyBytes = null;
+    try {
+      derivedKey = scrypt(passBytes, salt, { N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P, dkLen: SYMMETRIC_KEY_BYTES });
+      const cipher = chacha20poly1305(derivedKey, nonce);
+      rawKeyBytes = identityKey.toBytes();
+      const ciphertext = cipher.encrypt(rawKeyBytes);
+      return {
+        kdf: "scrypt",
+        N: SCRYPT_N,
+        r: SCRYPT_R,
+        p: SCRYPT_P,
+        salt: bytesToBase64(salt),
+        nonce: bytesToBase64(nonce),
+        ciphertext: bytesToBase64(ciphertext),
+        publicKey: bytesToBase64(identityKey.publicKey().toBytes())
+      };
+    } finally {
+      if (derivedKey) zeroize(derivedKey);
+      if (rawKeyBytes) zeroize(rawKeyBytes);
+      zeroize(passBytes);
+    }
+  }
+  function decryptIdentityKey(encryptedEnvelope, passphrase) {
+    const salt = base64ToBytes(encryptedEnvelope.salt);
+    const nonce = base64ToBytes(encryptedEnvelope.nonce);
+    const ciphertext = base64ToBytes(encryptedEnvelope.ciphertext);
+    const passBytes = typeof passphrase === "string" ? new TextEncoder().encode(passphrase) : new Uint8Array(passphrase);
+    let derivedKey = null;
+    let rawKeyBytes = null;
+    try {
+      if (encryptedEnvelope.kdf === "scrypt" || !encryptedEnvelope.kdf && encryptedEnvelope.N) {
+        const N3 = encryptedEnvelope.N || SCRYPT_N;
+        const r = encryptedEnvelope.r || SCRYPT_R;
+        const p = encryptedEnvelope.p || SCRYPT_P;
+        derivedKey = scrypt(passBytes, salt, { N: N3, r, p, dkLen: SYMMETRIC_KEY_BYTES });
+      } else {
+        const rounds = encryptedEnvelope.rounds || PBKDF2_ROUNDS;
+        derivedKey = pbkdf2(sha3_512, passBytes, salt, { c: rounds, dkLen: SYMMETRIC_KEY_BYTES });
+      }
+      const cipher = chacha20poly1305(derivedKey, nonce);
+      rawKeyBytes = cipher.decrypt(ciphertext);
+      return IdentityPrivateKey.fromBytes(rawKeyBytes);
+    } catch (err) {
+      throw new Error("Failed to decrypt identity key: incorrect passphrase or corrupted storage.");
+    } finally {
+      if (derivedKey) zeroize(derivedKey);
+      if (rawKeyBytes) zeroize(rawKeyBytes);
+      zeroize(passBytes);
+    }
+  }
   var HybridKEMCiphertext = class _HybridKEMCiphertext {
     constructor(mlkem_ct, x25519_ephem_pk_bytes) {
       this.mlkem_ct = mlkem_ct;
@@ -4955,6 +5485,8 @@ var PQC_MODULE = (() => {
       base64ToBytes,
       bytesToHex: bytesToHex3,
       hexToBytes: hexToBytes3,
+      encryptIdentityKey,
+      decryptIdentityKey,
       zeroize,
       constants: {
         MAGIC_BYTES,
@@ -4970,7 +5502,6 @@ var PQC_MODULE = (() => {
       }
     };
   }
-  return __toCommonJS(pqc_engine_exports);
 })();
 /*! Bundled license information:
 

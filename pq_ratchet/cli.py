@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 import argparse
 import asyncio
 import base64
-from typing import Optional
+from typing import Optional, Union, Tuple
 from cryptography.hazmat.primitives import serialization
 from pq_ratchet.primitives.identity import (
     IdentityPrivateKey,
@@ -61,6 +61,34 @@ def load_public_key(path: str) -> IdentityPublicKey:
     content = "".join([line.strip() for line in lines if not line.startswith("-----")])
     raw_pk = base64.b64decode(content)
     return IdentityPublicKey.from_bytes(raw_pk)
+
+
+def parse_bootstrap_endpoint(entry: str) -> Tuple[str, int, Optional[str]]:
+    """
+    Parses a bootstrap node specifier into (host, port, Optional[key_path]).
+    Safely handles Windows drive colons (e.g., C:\\keys\\peer.pub) and IPv6 addresses.
+    """
+    entry = entry.strip()
+    if entry.startswith("["):
+        bracket_end = entry.find("]")
+        if bracket_end == -1:
+            raise ValueError(f"Malformed IPv6 address in bootstrap entry: '{entry}'")
+        host = entry[1:bracket_end]
+        rest = entry[bracket_end + 1:]
+        if not rest.startswith(":"):
+            raise ValueError(f"Missing port in bootstrap entry: '{entry}'")
+        rest_parts = rest[1:].split(":", 1)
+        port = int(rest_parts[0])
+        key_path = rest_parts[1] if len(rest_parts) > 1 else None
+        return host, port, key_path
+
+    parts = entry.split(":", 2)
+    if len(parts) < 2:
+        raise ValueError(f"Invalid bootstrap endpoint format: '{entry}'. Expected host:port or host:port:key_path")
+    host = parts[0]
+    port = int(parts[1])
+    key_path = parts[2] if len(parts) > 2 else None
+    return host, port, key_path
 
 
 async def run_pipe_send(
@@ -234,15 +262,11 @@ async def run_p2p_node(listen_host: str, listen_port: int, key_path: str, bootst
     if bootstrap_nodes:
         boot_list = []
         for i, b in enumerate(bootstrap_nodes):
-            parts = b.split(":")
-            if len(parts) >= 3:
-                boot_host = parts[0]
-                boot_port = int(parts[1])
-                boot_pk = load_public_key(parts[2])
+            boot_host, boot_port, boot_key_path = parse_bootstrap_endpoint(b)
+            if boot_key_path:
+                boot_pk = load_public_key(boot_key_path)
                 boot_list.append((boot_host, boot_port, boot_pk))
-            elif len(parts) == 2:
-                boot_host = parts[0]
-                boot_port = int(parts[1])
+            else:
                 if i < len(trusted_pks):
                     boot_list.append((boot_host, boot_port, trusted_pks[i]))
                 else:
@@ -262,12 +286,40 @@ async def run_p2p_node(listen_host: str, listen_port: int, key_path: str, bootst
         print(f"[+] P2P Node cleanly stopped.")
 
 
-async def run_p2p_chat(key_path: str, peer_pub_path: str, target_peer_id: str, listen_port: int, bootstrap: Optional[str]):
+async def run_p2p_chat(
+    key_path: str,
+    peer_pub_path: str,
+    target_peer_id: str,
+    listen_port: int,
+    bootstrap: Optional[str],
+    bootstrap_pub: Optional[str] = None,
+):
     """Decentralized P2P terminal chat via peer swarm routing."""
     from pq_ratchet.transport.p2p import PQP2PNode
     sk = load_private_key(key_path)
     pk = load_public_key(peer_pub_path)
-    node = PQP2PNode(local_identity=sk, trusted_peers=[pk], listen_host="0.0.0.0", listen_port=listen_port)
+
+    # Determine bootstrap node key if bootstrap is configured
+    b_host = None
+    b_port = None
+    b_pk = None
+    if bootstrap:
+        bh, bp, b_key_path = parse_bootstrap_endpoint(bootstrap)
+        b_host = bh
+        b_port = bp
+        if b_key_path:
+            b_pk = load_public_key(b_key_path)
+        elif bootstrap_pub:
+            b_pk = load_public_key(bootstrap_pub)
+        else:
+            print(f"[*] Note: No bootstrap node key specified; assuming bootstrap node is target peer.")
+            b_pk = pk
+
+    trusted_peers = [pk]
+    if b_pk and b_pk.to_bytes() != pk.to_bytes():
+        trusted_peers.append(b_pk)
+
+    node = PQP2PNode(local_identity=sk, trusted_peers=trusted_peers, listen_host="0.0.0.0", listen_port=listen_port)
     await node.start()
 
     print(f"[+] Post-Quantum P2P Swarm Chat active.")
@@ -281,24 +333,11 @@ async def run_p2p_chat(key_path: str, peer_pub_path: str, target_peer_id: str, l
 
     node.on_message_received = on_p2p_msg
 
-    if bootstrap:
-        b_parts = bootstrap.split(":")
-        if len(b_parts) == 3:
-            bh, bp, b_key_path = b_parts
-            with open(b_key_path, "rb") as f:
-                b_raw = f.read()
-            b_pk = IdentityPublicKey.from_bytes(b_raw)
-        elif len(b_parts) == 2:
-            bh, bp = b_parts
-            b_pk = pk
-        else:
-            print(f"[-] Invalid bootstrap format: {bootstrap}. Expected host:port or host:port:key_path")
-            return
-
-        print(f"[*] Connecting to bootstrap node {bh}:{bp}...")
+    if bootstrap and b_host is not None and b_port is not None:
+        print(f"[*] Connecting to bootstrap node {b_host}:{b_port}...")
         try:
-            await node.connect_peer(bh, int(bp), b_pk)
-            print(f"[+] Connected to swarm mesh via {bootstrap}.")
+            await node.connect_peer(b_host, b_port, b_pk)
+            print(f"[+] Connected to swarm mesh via {b_host}:{b_port}.")
         except Exception as e:
             print(f"[-] Warning: bootstrap connect failed: {e}")
 
@@ -428,7 +467,8 @@ def main():
     p_p2p_chat.add_argument("--peer-pub", required=True, help="Target peer public key")
     p_p2p_chat.add_argument("--target-peer", required=True, help="Target PeerID (pqc_...)")
     p_p2p_chat.add_argument("--port", type=int, default=9101, help="Local listening port (default: 9101)")
-    p_p2p_chat.add_argument("--bootstrap", default=None, help="Bootstrap peer host:port to enter swarm")
+    p_p2p_chat.add_argument("--bootstrap", default=None, help="Bootstrap peer host:port or host:port:key_path to enter swarm")
+    p_p2p_chat.add_argument("--bootstrap-pub", default=None, help="Bootstrap node public key path (if different from target peer)")
 
     # tor
     p_tor = subparsers.add_parser("tor", help="Tor Onion Routing & Hidden Service utilities")
@@ -505,7 +545,7 @@ def main():
             lhost, lport = args.listen.split(":")
             asyncio.run(run_p2p_node(lhost, int(lport), args.key, args.bootstrap, args.peer_pub))
         elif args.p2p_mode == "chat":
-            asyncio.run(run_p2p_chat(args.key, args.peer_pub, args.target_peer, args.port, args.bootstrap))
+            asyncio.run(run_p2p_chat(args.key, args.peer_pub, args.target_peer, args.port, args.bootstrap, getattr(args, "bootstrap_pub", None)))
 
     elif args.subcommand == "tor":
         if args.tor_mode == "status":

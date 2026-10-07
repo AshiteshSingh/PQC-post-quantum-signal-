@@ -401,6 +401,77 @@ class TestDecentralizedTransport(unittest.IsolatedAsyncioTestCase):
             await node_b.stop()
             await node_c.stop()
 
+    def test_bootstrap_endpoint_parsing_windows_paths_and_ipv6(self):
+        """
+        Validates that parse_bootstrap_endpoint correctly handles Windows drive paths
+        (e.g., C:\...) and IPv6 bracketed endpoints without splitting on path colons.
+        """
+        from pq_ratchet.cli import parse_bootstrap_endpoint
+
+        # Standard IPv4 without key path
+        h, p, k = parse_bootstrap_endpoint("127.0.0.1:9000")
+        self.assertEqual(h, "127.0.0.1")
+        self.assertEqual(p, 9000)
+        self.assertIsNone(k)
+
+        # Windows drive path with colon
+        h, p, k = parse_bootstrap_endpoint(r"127.0.0.1:9000:C:\Users\Ashitesh\Desktop\bob.pub")
+        self.assertEqual(h, "127.0.0.1")
+        self.assertEqual(p, 9000)
+        self.assertEqual(k, r"C:\Users\Ashitesh\Desktop\bob.pub")
+
+        # POSIX path
+        h, p, k = parse_bootstrap_endpoint("192.168.1.10:9100:/var/tor/keys/node.pub")
+        self.assertEqual(h, "192.168.1.10")
+        self.assertEqual(p, 9100)
+        self.assertEqual(k, "/var/tor/keys/node.pub")
+
+        # IPv6 bracketed endpoint with Windows path
+        h, p, k = parse_bootstrap_endpoint(r"[::1]:9050:D:\keys\peer.pub")
+        self.assertEqual(h, "::1")
+        self.assertEqual(p, 9050)
+        self.assertEqual(k, r"D:\keys\peer.pub")
+
+        # IPv6 bracketed endpoint without key path
+        h, p, k = parse_bootstrap_endpoint("[2001:db8::1]:8080")
+        self.assertEqual(h, "2001:db8::1")
+        self.assertEqual(p, 8080)
+        self.assertIsNone(k)
+
+    async def test_send_relayed_short_plaintext_rejection_under_32_bytes(self):
+        """
+        Validates that send_relayed() rejects unencrypted plaintexts even when
+        the ciphertext length is under 32 bytes (eliminating the <32B bypass).
+        """
+        from pq_ratchet.core.framing import RatchetDataPacket
+        from pq_ratchet.transport.p2p import P2PMessageEnvelope
+
+        node_a_sk = IdentityPrivateKey.generate()
+        node_a = PQP2PNode(local_identity=node_a_sk, trusted_peers=[], listen_host="127.0.0.1", listen_port=19239)
+
+        # 24-byte plaintext (< 32 bytes, but >= AEAD_TAG_BYTES)
+        short_plaintext = b"ShortASCIISecretText123!"
+        self.assertLess(len(short_plaintext), 32)
+        self.assertGreaterEqual(len(short_plaintext), 16)
+
+        fake_pkt = RatchetDataPacket(
+            epoch=0,
+            seq=0,
+            kem_ct=None,
+            next_kem_pk=None,
+            ciphertext=short_plaintext,
+        )
+        fake_payload = fake_pkt.serialize()
+
+        # Invariant: Must be rejected as plaintext characteristics despite len < 32
+        with self.assertRaises(ValueError) as ctx:
+            await node_a.send_relayed(
+                target_peer_id="pqc_targetpeer",
+                e2ee_payload=fake_payload,
+                msg_type=P2PMessageEnvelope.TYPE_E2EE_RATCHET_DATA,
+            )
+        self.assertIn("plaintext characteristics", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
