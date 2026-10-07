@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 import argparse
 import asyncio
 import base64
+import ipaddress
 from typing import Optional, Union, Tuple
 from cryptography.hazmat.primitives import serialization
 from pq_ratchet.primitives.identity import (
@@ -88,6 +89,25 @@ def parse_host_port(endpoint: str, default_host: str = "0.0.0.0") -> Tuple[str, 
     host = parts[0] or default_host
     port = int(parts[1])
     return host, port
+
+
+def is_loopback_host(host: str) -> bool:
+    """
+    Determines whether the specified network host is strictly restricted to local loopback.
+    Returns True for '127.0.0.1', 'localhost', '::1', '[::1]', or any address in 127.0.0.0/8.
+    """
+    if not host:
+        return False
+    cleaned = host.strip().lower()
+    if cleaned.startswith("[") and cleaned.endswith("]"):
+        cleaned = cleaned[1:-1]
+    if cleaned in {"127.0.0.1", "localhost", "::1"}:
+        return True
+    try:
+        ip = ipaddress.ip_address(cleaned)
+        return ip.is_loopback
+    except ValueError:
+        return False
 
 
 def parse_bootstrap_endpoint(entry: str) -> Tuple[str, int, Optional[str]]:
@@ -514,11 +534,12 @@ def main():
 
     # web
     p_web = subparsers.add_parser("web", help="Launch interactive Post-Quantum Web Chat GUI")
-    p_web.add_argument("--host", default="0.0.0.0", help="Binding host (default: 0.0.0.0)")
+    p_web.add_argument("--host", default="127.0.0.1", help="Binding host (default: 127.0.0.1 loopback for local-only security)")
     p_web.add_argument("--port", type=int, default=8000, help="Port to listen on (default: 8000)")
     p_web.add_argument("--ssl-keyfile", default=None, help="SSL private key file path for HTTPS / WSS")
     p_web.add_argument("--ssl-certfile", default=None, help="SSL certificate file path for HTTPS / WSS")
     p_web.add_argument("--tls", action="store_true", help="Generate ephemeral self-signed TLS cert for instant HTTPS/WSS")
+    p_web.add_argument("--allow-insecure-http", action="store_true", help="Allow plaintext HTTP on non-loopback network interfaces (only when terminating TLS at a trusted reverse proxy)")
     p_web.add_argument("--pairing-token", default=None, help="Pairing token for authenticating opaque/file:// origins")
     p_web.add_argument("--admin-token", default=None, help="Admin authorization token for privileged API access")
 
@@ -601,6 +622,22 @@ def main():
         ssl_keyfile = args.ssl_keyfile
         ssl_certfile = args.ssl_certfile
 
+        # Network Security Policy: Local loopback permits plaintext HTTP;
+        # Non-loopback network bindings strictly require TLS encryption.
+        is_loopback = is_loopback_host(args.host)
+        has_tls = bool(args.tls or (ssl_keyfile and ssl_certfile))
+
+        if not is_loopback and not has_tls and not args.allow_insecure_http:
+            print(
+                f"\n[!] CRITICAL SECURITY ENFORCEMENT: Non-loopback network binding (--host '{args.host}') "
+                f"strictly requires TLS encryption to prevent network eavesdropping of administrative credentials "
+                f"and WebSocket session tokens.\n"
+                f"    -> Pass --tls to automatically generate an ephemeral zero-trace TLS certificate,\n"
+                f"    -> Provide --ssl-certfile and --ssl-keyfile for trusted CA certificates, or\n"
+                f"    -> Pass --allow-insecure-http only if terminating TLS at a trusted reverse proxy (e.g. Nginx, Cloudflare).\n"
+            )
+            sys.exit(1)
+
         if args.tls and (not ssl_keyfile or not ssl_certfile):
             from pq_ratchet.web.tls import generate_ephemeral_tls_cert
             cert_p, key_p = generate_ephemeral_tls_cert(args.host if args.host != "0.0.0.0" else "127.0.0.1")
@@ -619,7 +656,8 @@ def main():
         atoken = get_admin_token()
 
         proto = "https" if ssl_certfile else "http"
-        print(f"\n[+] Launching Post-Quantum Secure Web Chat at {proto}://localhost:{args.port}")
+        host_display = "127.0.0.1" if is_loopback else args.host
+        print(f"\n[+] Launching Post-Quantum Secure Web Chat at {proto}://{host_display}:{args.port}")
         print(f"[+] Zero IP retention, zero disk storage, 1-hour ephemeral registry.")
         print(f"[+] Pairing Token for opaque/file:// origins: {ptoken}")
         print(f"[+] Admin Authorization Token: {atoken}\n")

@@ -184,6 +184,12 @@ class TestEphemeralWebPQRatchet(unittest.TestCase):
         )
         self.assertEqual(resp_bad_auth.status_code, 401)
 
+        # 2b. Query-string authentication (?auth=... or ?admin_token=...) is strictly rejected with 401
+        resp_query_auth = self.client.get(f"/api/pairing-token?auth={admin_token}")
+        self.assertEqual(resp_query_auth.status_code, 401)
+        resp_query_admin = self.client.get(f"/api/pairing-token?admin_token={admin_token}")
+        self.assertEqual(resp_query_admin.status_code, 401)
+
         # 3. Authenticated request via Authorization Bearer header succeeds
         resp_auth_bearer = self.client.get(
             "/api/pairing-token",
@@ -231,6 +237,23 @@ class TestEphemeralWebPQRatchet(unittest.TestCase):
             headers={"Authorization": f"Bearer {admin_token}", "sec-fetch-site": "cross-site"},
         )
         self.assertEqual(resp_sec.status_code, 403)
+
+    def test_cli_web_loopback_default_and_network_tls_enforcement(self):
+        """
+        P2 Security Invariant:
+        CLI binds to loopback (127.0.0.1) by default for local-only safety.
+        Non-loopback bindings require TLS or explicit --allow-insecure-http reverse proxy flag.
+        """
+        from pq_ratchet.cli import is_loopback_host
+        self.assertTrue(is_loopback_host("127.0.0.1"))
+        self.assertTrue(is_loopback_host("localhost"))
+        self.assertTrue(is_loopback_host("::1"))
+        self.assertTrue(is_loopback_host("[::1]"))
+        self.assertTrue(is_loopback_host("127.0.0.2"))
+        self.assertFalse(is_loopback_host("0.0.0.0"))
+        self.assertFalse(is_loopback_host("::"))
+        self.assertFalse(is_loopback_host("192.168.1.100"))
+        self.assertFalse(is_loopback_host("example.com"))
 
     def test_cors_and_corp_headers_for_standalone_clients(self):
         """Verifies CORS and CORP headers permit cross-origin directory fetching from file:// and external origins."""

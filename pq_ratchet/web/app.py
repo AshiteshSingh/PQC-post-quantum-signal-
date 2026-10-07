@@ -90,20 +90,21 @@ def verify_admin_token(provided_token: Optional[str]) -> bool:
 
 
 def extract_auth_token(request: Request) -> Optional[str]:
-    """Extracts authorization bearer token or admin token from HTTP request."""
+    """
+    Extracts authorization bearer token or admin token from HTTP request headers.
+    Query-string authentication is strictly forbidden to prevent credential leakage
+    in browser histories, referrer headers, and intermediate proxy access logs.
+    """
     auth_header = request.headers.get("authorization")
     if auth_header:
         parts = auth_header.strip().split()
         if len(parts) == 2 and parts[0].lower() == "bearer":
             return parts[1]
-        elif len(parts) == 1:
+        elif len(parts) == 1 and not parts[0].lower().startswith("bearer"):
             return parts[0]
     x_admin = request.headers.get("x-admin-token")
     if x_admin:
         return x_admin.strip()
-    query_token = request.query_params.get("auth") or request.query_params.get("admin_token")
-    if query_token:
-        return query_token.strip()
     return None
 
 
