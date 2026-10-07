@@ -194,7 +194,7 @@ class TestDecentralizedTransport(unittest.IsolatedAsyncioTestCase):
 
             # Verify security policy guard: raw unencrypted payloads cannot be relayed
             with self.assertRaises(ValueError):
-                await node_a.send_relayed(
+                await node_a._send_relayed(
                     target_peer_id=node_c.peer_id,
                     e2ee_payload=b"Insecure raw chat bytes",
                     msg_type=P2PMessageEnvelope.TYPE_CHAT_DATA,
@@ -202,7 +202,7 @@ class TestDecentralizedTransport(unittest.IsolatedAsyncioTestCase):
 
             # Verify structural cryptographic enforcement: deceptive label on raw plaintext is rejected
             with self.assertRaises(ValueError):
-                await node_a.send_relayed(
+                await node_a._send_relayed(
                     target_peer_id=node_c.peer_id,
                     e2ee_payload=b"Plaintext masquerading as ratchet ciphertext",
                     msg_type=P2PMessageEnvelope.TYPE_E2EE_RATCHET_DATA,
@@ -346,8 +346,8 @@ class TestDecentralizedTransport(unittest.IsolatedAsyncioTestCase):
         # Short plaintexts: 1 byte, 4 bytes, 2 bytes (producing 17, 20, 18 byte ciphertexts)
         for short_msg in [b"A", b"PING", b"OK"]:
             short_ct_pkt = alice_session.ratchet_encrypt(short_msg)
-            # send_relayed must admit legitimate short ciphertext
-            admitted = await node_a.send_relayed(
+            # _send_relayed must admit legitimate short ciphertext
+            admitted = await node_a._send_relayed(
                 target_peer_id=node_b.peer_id,
                 e2ee_payload=short_ct_pkt,
                 msg_type=P2PMessageEnvelope.TYPE_E2EE_RATCHET_DATA,
@@ -393,7 +393,7 @@ class TestDecentralizedTransport(unittest.IsolatedAsyncioTestCase):
         fake_wire_bytes = fake_pkt.serialize()
 
         # Transport framing admits the syntactically valid envelope
-        admitted = await node_a.send_relayed(
+        admitted = await node_a._send_relayed(
             target_peer_id=node_b.peer_id,
             e2ee_payload=fake_wire_bytes,
             msg_type=P2PMessageEnvelope.TYPE_E2EE_RATCHET_DATA,
@@ -562,35 +562,29 @@ class TestDecentralizedTransport(unittest.IsolatedAsyncioTestCase):
 
         # Invariant: Must be rejected at transport framing validation
         with self.assertRaises(ValueError) as ctx:
-            await node_a.send_relayed(
+            await node_a._send_relayed(
                 target_peer_id="pqc_targetpeer",
                 e2ee_payload=fake_payload,
                 msg_type=P2PMessageEnvelope.TYPE_E2EE_RATCHET_DATA,
             )
         self.assertIn("shorter than AEAD tag", str(ctx.exception))
 
-    async def test_send_relayed_public_api_warning(self):
+    async def test_send_relayed_public_api_disabled(self):
         """
-        Validates that invoking the public send_relayed() API directly triggers a prominent
-        UserWarning emphasizing that it is an unauthenticated wire routing primitive that does
-        not encrypt application payloads.
+        Validates that invoking the public send_relayed() API directly raises RuntimeError
+        to eliminate the attack surface where callers inadvertently forward unencrypted payloads.
+        Callers must use send_e2ee_chat() or internal _send_relayed().
         """
-        import warnings
         node_a_sk = IdentityPrivateKey.generate()
         node_a = PQP2PNode(local_identity=node_a_sk, trusted_peers=[], listen_host="127.0.0.1", listen_port=19249)
 
-        # Mock HandshakeInit packet
-        _, init_bytes = PQRatchetSession.initiate_handshake(node_a_sk, node_a_sk.public_key())
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
+        with self.assertRaises(RuntimeError) as ctx:
             await node_a.send_relayed(
                 target_peer_id="pqc_target",
-                e2ee_payload=init_bytes,
-                msg_type=P2PMessageEnvelope.TYPE_E2EE_HANDSHAKE_INIT,
+                e2ee_payload=b"arbitrary_payload",
+                msg_type=P2PMessageEnvelope.TYPE_E2EE_RATCHET_DATA,
             )
-            self.assertTrue(any(issubclass(item.category, UserWarning) for item in w))
-            self.assertTrue(any("low-level wire routing primitive" in str(item.message) for item in w))
+        self.assertIn("disabled in the public API", str(ctx.exception))
 
 
 if __name__ == "__main__":

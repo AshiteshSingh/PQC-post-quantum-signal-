@@ -328,36 +328,33 @@ class PQP2PNode:
         max_hops: int = 3,
     ) -> bool:
         """
-        [SECURITY WARNING: LOW-LEVEL WIRE ROUTING PRIMITIVE - NOT FOR APPLICATION PLAINTEXT]
+        [DEFECT RESOLUTION: DISABLED IN PUBLIC API - PLAINTEXT LEAKAGE MITIGATION]
         ====================================================================================
-        ARCHITECTURAL & CONFIDENTIALITY LIMITATION:
-        This method is a low-level wire routing primitive designed strictly for routing
-        pre-encrypted protocol packets. While it enforces wire framing structure and minimum
-        tag length, it DOES NOT encrypt application data and CANNOT verify whether the
-        supplied payload originated from an active PQRatchetSession.
-
-        Direct callers that pass unencrypted or custom payloads to `send_relayed()` WILL
-        LEAK DATA IN THE CLEAR TO INTERMEDIATE RELAY NODES.
+        Direct invocation of send_relayed() is strictly disabled in the public API.
+        
+        Because low-level transport forwarders cannot verify whether caller-supplied arbitrary
+        bytes are encrypted under a valid endpoint ratchet session, exposing send_relayed()
+        creates an unsafe interface where direct callers can forward plaintext in the clear
+        across intermediate blind relays.
 
         SAFE APPLICATION APIS:
-        Application callers must call `send_message_to_peer()` or `send_e2ee_chat()`. Those
+        Application callers must call `send_e2ee_chat()` or `send_message_to_peer()`. Those
         APIs establish an authenticated post-quantum session (ML-KEM-768 + ML-DSA-65) and
         evaluate ChaCha20-Poly1305 AEAD ratchet encryption prior to transport dispatch.
+
+        INTERNAL PROTOCOL ROUTING:
+        Transport implementations routing pre-encrypted wire frames must explicitly invoke
+        the internal `_send_relayed()` primitive.
         ====================================================================================
         """
-        warnings.warn(
-            "PQP2PNode.send_relayed() is a low-level wire routing primitive and does not "
-            "encrypt application payloads. Direct callers risk exposing data to intermediate relays. "
-            "Use send_e2ee_chat() or send_message_to_peer() for end-to-end encrypted messaging.",
-            category=UserWarning,
-            stacklevel=2,
+        raise RuntimeError(
+            "PQP2PNode.send_relayed() is disabled in the public API to prevent accidental "
+            "plaintext exposure across intermediate relays. Application messaging must use "
+            "send_e2ee_chat() or send_message_to_peer(), which perform authenticated "
+            "post-quantum double ratchet encryption. Internal protocol transport routing "
+            "must invoke _send_relayed() directly."
         )
-        return await self._send_relayed(
-            target_peer_id=target_peer_id,
-            e2ee_payload=e2ee_payload,
-            msg_type=msg_type,
-            max_hops=max_hops,
-        )
+
 
     async def send_e2ee_chat(
         self,
