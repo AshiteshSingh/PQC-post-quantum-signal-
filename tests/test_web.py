@@ -285,10 +285,119 @@ class TestEphemeralWebPQRatchet(unittest.TestCase):
             self.assertIn("manifest_signature", report)
             self.assertIn("SIGNATURE_VERIFICATION_FAILED", report["manifest_signature"])
 
+    def test_signature_only_verification_new_release(self):
+        """
+        Validates the release workflow: newly signed releases with different manifest digests
+        succeed under --require-sig without needing a hardcoded built-in digest match.
+        """
+        import tempfile
+        import os
+        import json
+        from pq_ratchet.web.verify_bundle import verify_static_manifest, compute_asset_digests, REQUIRED_CLIENT_ASSETS
+        from pq_ratchet.primitives.identity import IdentityPrivateKey
+
+        with tempfile.TemporaryDirectory() as td:
+            files_spec = {}
+            for asset in REQUIRED_CLIENT_ASSETS:
+                p = os.path.join(td, asset)
+                with open(p, "wb") as f:
+                    f.write(f"release-2.0.0-content-for-{asset}".encode())
+                sha256, sri, size = compute_asset_digests(p)
+                files_spec[asset] = {"sha256": sha256, "sri_sha384": sri, "bytes": size}
+
+            manifest_bytes = json.dumps({"version": "2.0.0", "files": files_spec}, indent=2).encode("utf-8")
+            mp = os.path.join(td, "manifest.json")
+            with open(mp, "wb") as f:
+                f.write(manifest_bytes)
+
+            rel_sk = IdentityPrivateKey.generate()
+            rel_pk = rel_sk.public_key()
+            sig = rel_sk.sign(manifest_bytes)
+
+            sig_p = os.path.join(td, "manifest.sig")
+            with open(sig_p, "wb") as f:
+                f.write(sig)
+
+            # Signature-only mode: trusted_digest is None, require_signature is True
+            valid, report = verify_static_manifest(
+                static_dir=td,
+                manifest_path=mp,
+                trusted_digest=None,
+                trusted_pk=rel_pk,
+                signature_path=sig_p,
+                require_signature=True,
+            )
+            self.assertTrue(valid, f"Signature-only verification failed: {report}")
+            self.assertIn("AUTHENTICATED", report["manifest_signature"])
+            for asset in REQUIRED_CLIENT_ASSETS:
+                self.assertIn("VERIFIED", report[asset])
+
+    def test_trusted_pk_from_file_path_binary_and_base64(self):
+        """
+        Validates that trusted_pk correctly reads from file paths containing either raw
+        binary (1952 bytes) or base64-encoded text.
+        """
+        import tempfile
+        import os
+        import json
+        import base64
+        from pq_ratchet.web.verify_bundle import verify_static_manifest, compute_asset_digests, REQUIRED_CLIENT_ASSETS
+        from pq_ratchet.primitives.identity import IdentityPrivateKey
+
+        with tempfile.TemporaryDirectory() as td:
+            files_spec = {}
+            for asset in REQUIRED_CLIENT_ASSETS:
+                p = os.path.join(td, asset)
+                with open(p, "wb") as f:
+                    f.write(f"content-{asset}".encode())
+                sha256, sri, size = compute_asset_digests(p)
+                files_spec[asset] = {"sha256": sha256, "sri_sha384": sri, "bytes": size}
+
+            manifest_bytes = json.dumps({"version": "1.0.0", "files": files_spec}).encode("utf-8")
+            mp = os.path.join(td, "manifest.json")
+            with open(mp, "wb") as f:
+                f.write(manifest_bytes)
+
+            rel_sk = IdentityPrivateKey.generate()
+            rel_pk = rel_sk.public_key()
+            sig = rel_sk.sign(manifest_bytes)
+
+            sig_p = os.path.join(td, "manifest.sig")
+            with open(sig_p, "wb") as f:
+                f.write(sig)
+
+            # 1. Raw binary file
+            bin_key_p = os.path.join(td, "rel_bin.pub")
+            with open(bin_key_p, "wb") as f:
+                f.write(rel_pk.to_bytes())
+
+            valid_bin, report_bin = verify_static_manifest(
+                static_dir=td,
+                manifest_path=mp,
+                trusted_pk=bin_key_p,
+                signature_path=sig_p,
+                require_signature=True,
+            )
+            self.assertTrue(valid_bin, f"Binary key file verification failed: {report_bin}")
+
+            # 2. Base64-encoded text file
+            b64_key_p = os.path.join(td, "rel_b64.pub")
+            with open(b64_key_p, "w", encoding="utf-8") as f:
+                f.write(base64.b64encode(rel_pk.to_bytes()).decode("ascii"))
+
+            valid_b64, report_b64 = verify_static_manifest(
+                static_dir=td,
+                manifest_path=mp,
+                trusted_pk=b64_key_p,
+                signature_path=sig_p,
+                require_signature=True,
+            )
+            self.assertTrue(valid_b64, f"Base64 key file verification failed: {report_b64}")
 
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
 

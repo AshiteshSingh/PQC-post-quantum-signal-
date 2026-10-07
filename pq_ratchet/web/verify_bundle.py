@@ -13,7 +13,7 @@ code bundle before execution. Verification mandates:
 1. Manifest Authenticity: The distribution manifest (manifest.json) must be authenticated
    against a trusted root SHA-256 digest OR an unforgeable post-quantum digital signature
    (FIPS 204 ML-DSA-65 EUF-CMA) signed by an independent release key. Untrusted or modified
-   manifests are strictly rejected.
+   manifests are strictly rejected. Signature-only verification is supported for new releases.
 2. Mandatory Asset Completeness: The manifest must declare the exact mandatory client asset
    set (REQUIRED_CLIENT_ASSETS). Missing 'files' fields, empty mappings, or omitted files fail.
 3. Asset Cryptographic Integrity: Every mandatory asset on disk is verified against both
@@ -69,6 +69,75 @@ def compute_asset_digests(file_path: str) -> Tuple[str, str, int]:
     return sha256_hex, sri_sha384, total_bytes
 
 
+def resolve_trusted_pk(
+    trusted_pk: Optional[Union[IdentityPublicKey, bytes, str]] = None,
+    static_dir: Optional[str] = None,
+) -> Optional[IdentityPublicKey]:
+    """
+    Resolves an IdentityPublicKey from:
+    1. An existing IdentityPublicKey instance.
+    2. A filesystem path to a public key file (containing raw 1952 bytes or base64 text).
+    3. Raw 1952 binary bytes or base64 bytes.
+    4. An inline base64 string.
+    5. Falls back to <static_dir>/release_key.pub if present, or DEFAULT_TRUSTED_RELEASE_PK_B64.
+    """
+    if isinstance(trusted_pk, IdentityPublicKey):
+        return trusted_pk
+
+    pk_bytes: Optional[bytes] = None
+
+    if trusted_pk is None:
+        if static_dir:
+            default_pk_file = os.path.join(static_dir, "release_key.pub")
+            if os.path.isfile(default_pk_file):
+                try:
+                    with open(default_pk_file, "rb") as f:
+                        pk_bytes = f.read()
+                except Exception:
+                    pk_bytes = None
+        if pk_bytes is None:
+            try:
+                pk_bytes = base64.b64decode(DEFAULT_TRUSTED_RELEASE_PK_B64.strip())
+            except Exception:
+                pk_bytes = None
+    elif isinstance(trusted_pk, bytes):
+        pk_bytes = trusted_pk
+    elif isinstance(trusted_pk, str):
+        # Check if trusted_pk is a filesystem path
+        if os.path.isfile(trusted_pk):
+            try:
+                with open(trusted_pk, "rb") as f:
+                    pk_bytes = f.read()
+            except Exception:
+                return None
+        else:
+            # Inline string: treat as base64
+            try:
+                pk_bytes = base64.b64decode(trusted_pk.strip())
+            except Exception:
+                return None
+
+    if pk_bytes is None:
+        return None
+
+    # Handle raw binary (1952 bytes)
+    if len(pk_bytes) == MLDSA65_PUBLIC_KEY_BYTES:
+        try:
+            return IdentityPublicKey.from_bytes(pk_bytes)
+        except Exception:
+            return None
+
+    # Handle base64-encoded bytes in file or buffer
+    try:
+        decoded = base64.b64decode(pk_bytes.strip())
+        if len(decoded) == MLDSA65_PUBLIC_KEY_BYTES:
+            return IdentityPublicKey.from_bytes(decoded)
+    except Exception:
+        pass
+
+    return None
+
+
 def sign_manifest_bytes(manifest_bytes: bytes, private_key: IdentityPrivateKey) -> bytes:
     """
     Computes FIPS 204 ML-DSA-65 digital signature over raw manifest bytes.
@@ -81,8 +150,8 @@ def sign_manifest_bytes(manifest_bytes: bytes, private_key: IdentityPrivateKey) 
 def verify_static_manifest(
     static_dir: Optional[str] = None,
     manifest_path: Optional[str] = None,
-    trusted_digest: Optional[str] = DEFAULT_TRUSTED_MANIFEST_SHA256,
-    trusted_pk: Optional[Union[IdentityPublicKey, bytes, str]] = DEFAULT_TRUSTED_RELEASE_PK_B64,
+    trusted_digest: Optional[str] = None,
+    trusted_pk: Optional[Union[IdentityPublicKey, bytes, str]] = None,
     signature_path: Optional[str] = None,
     enforce_exact_assets: bool = True,
     require_signature: bool = False,
@@ -91,9 +160,14 @@ def verify_static_manifest(
     """
     Validates all client web assets against the authenticated cryptographic manifest.json.
     
-    Security Invariants:
-    1. Authenticates manifest.json via trusted root SHA-256 digest AND/OR ML-DSA-65 signature.
-       Unauthenticated manifests are strictly rejected when enforce_auth is True.
+    Security Invariants & Release Workflow:
+    1. Authenticates manifest.json via trusted ML-DSA-65 digital signature OR root SHA-256 digest.
+       - Signature-Only Mode (require_signature=True): Verifies ML-DSA-65 signature against trusted_pk.
+         Does NOT require matching a hardcoded built-in digest, enabling new releases without code edits.
+       - Explicit Digest Mode (trusted_digest is not None): Enforces exact SHA-256 digest match.
+       - Default Mode (neither explicitly passed): Verifies ML-DSA-65 signature if present; falls back
+         to checking DEFAULT_TRUSTED_MANIFEST_SHA256.
+       - Unauthenticated manifests strictly fail when enforce_auth is True.
     2. Enforces presence and non-emptiness of the exact REQUIRED_CLIENT_ASSETS mapping.
        Missing files fields, empty mappings, or omitted mandatory assets immediately fail.
     3. Verifies every mandatory asset on disk matches both SHA-256 and SRI SHA-384 digests.
@@ -117,21 +191,11 @@ def verify_static_manifest(
 
     report: Dict[str, str] = {}
     auth_ok = False
+    computed_digest = hashlib.sha256(manifest_raw).hexdigest()
 
-    # 1. Separately trusted digest authentication
-    if trusted_digest is not None:
-        computed_digest = hashlib.sha256(manifest_raw).hexdigest()
-        if computed_digest.lower() != trusted_digest.lower():
-            report["manifest_digest"] = (
-                f"DIGEST_MISMATCH: Computed {computed_digest}, expected trusted root {trusted_digest}"
-            )
-            return False, report
-        else:
-            report["manifest_digest"] = f"AUTHENTICATED (SHA-256: {computed_digest[:16]}...)"
-            auth_ok = True
-
-    # 2. Separately trusted ML-DSA-65 signature authentication
-    if signature_path is not None or require_signature:
+    # 1. Digital Signature Authentication Flow (ML-DSA-65)
+    # Evaluated when require_signature is True OR when signature file is available on disk
+    if require_signature or (signature_path is not None and os.path.isfile(signature_path)):
         if not signature_path or not os.path.isfile(signature_path):
             report["manifest_signature"] = "MISSING: Signature file not found"
             return False, report
@@ -147,27 +211,7 @@ def verify_static_manifest(
             except Exception:
                 pass
 
-        pk_obj: Optional[IdentityPublicKey] = None
-        if isinstance(trusted_pk, IdentityPublicKey):
-            pk_obj = trusted_pk
-        elif isinstance(trusted_pk, bytes):
-            if len(trusted_pk) == MLDSA65_PUBLIC_KEY_BYTES:
-                pk_obj = IdentityPublicKey.from_bytes(trusted_pk)
-            else:
-                try:
-                    raw_pk = base64.b64decode(trusted_pk)
-                    if len(raw_pk) == MLDSA65_PUBLIC_KEY_BYTES:
-                        pk_obj = IdentityPublicKey.from_bytes(raw_pk)
-                except Exception:
-                    pass
-        elif isinstance(trusted_pk, str):
-            try:
-                raw_pk = base64.b64decode(trusted_pk.strip())
-                if len(raw_pk) == MLDSA65_PUBLIC_KEY_BYTES:
-                    pk_obj = IdentityPublicKey.from_bytes(raw_pk)
-            except Exception:
-                pass
-
+        pk_obj = resolve_trusted_pk(trusted_pk, static_dir=static_dir)
         if pk_obj is None:
             report["manifest_signature"] = "FAILED: Trusted release public key invalid or not provided"
             return False, report
@@ -178,6 +222,42 @@ def verify_static_manifest(
         else:
             report["manifest_signature"] = "AUTHENTICATED (ML-DSA-65 EUF-CMA signature valid)"
             auth_ok = True
+
+    # 2. Digest Authentication Flow (SHA-256)
+    if trusted_digest is not None:
+        # Caller explicitly supplied an expected digest
+        if computed_digest.lower() != trusted_digest.lower():
+            report["manifest_digest"] = (
+                f"DIGEST_MISMATCH: Computed {computed_digest}, expected trusted root {trusted_digest}"
+            )
+            return False, report
+        else:
+            report["manifest_digest"] = f"AUTHENTICATED (SHA-256: {computed_digest[:16]}...)"
+            auth_ok = True
+    elif not require_signature:
+        # If signature was not required and not authenticated, fall back to checking built-in digest if enforce_auth
+        if not auth_ok:
+            if computed_digest.lower() == DEFAULT_TRUSTED_MANIFEST_SHA256.lower():
+                report["manifest_digest"] = f"AUTHENTICATED (SHA-256: {computed_digest[:16]}...)"
+                auth_ok = True
+            elif enforce_auth:
+                report["manifest_digest"] = (
+                    f"DIGEST_MISMATCH: Computed {computed_digest}, expected trusted root {DEFAULT_TRUSTED_MANIFEST_SHA256}"
+                )
+                return False, report
+        else:
+            # Signature was already authenticated; report computed digest info
+            if computed_digest.lower() == DEFAULT_TRUSTED_MANIFEST_SHA256.lower():
+                report["manifest_digest"] = f"AUTHENTICATED (SHA-256: {computed_digest[:16]}...)"
+            else:
+                report["manifest_digest"] = f"COMPUTED (SHA-256: {computed_digest[:16]}...)"
+
+    else:
+        # require_signature=True and trusted_digest is None -> Signature-only release workflow
+        if computed_digest.lower() == DEFAULT_TRUSTED_MANIFEST_SHA256.lower():
+            report["manifest_digest"] = f"AUTHENTICATED (SHA-256: {computed_digest[:16]}...)"
+        else:
+            report["manifest_digest"] = f"COMPUTED (SHA-256: {computed_digest[:16]}...)"
 
     if enforce_auth and not auth_ok:
         report["manifest_auth"] = "UNAUTHENTICATED: No trusted digest or valid signature supplied"
@@ -259,7 +339,7 @@ def main() -> int:
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Verify Post-Quantum Ratchet Web Client Integrity against pinned manifest"
+        description="Verify Post-Quantum Ratchet Web Client Integrity against authenticated manifest"
     )
     parser.add_argument(
         "--dir",
@@ -278,18 +358,18 @@ def main() -> int:
     )
     parser.add_argument(
         "--trusted-digest",
-        default=DEFAULT_TRUSTED_MANIFEST_SHA256,
-        help="Expected SHA-256 digest of authentic manifest.json",
+        default=None,
+        help="Explicit SHA-256 digest of manifest.json (optional; enables signature-only verification)",
     )
     parser.add_argument(
         "--require-sig",
         action="store_true",
-        help="Mandate valid ML-DSA-65 digital signature verification",
+        help="Mandate valid ML-DSA-65 digital signature verification (signature-only release verification)",
     )
     parser.add_argument(
         "--trusted-pk",
-        default=DEFAULT_TRUSTED_RELEASE_PK_B64,
-        help="Base64 or file path to trusted ML-DSA-65 release public key",
+        default=None,
+        help="File path or base64 string for trusted ML-DSA-65 release public key (default: <dir>/release_key.pub or embedded release key)",
     )
 
     args = parser.parse_args()
