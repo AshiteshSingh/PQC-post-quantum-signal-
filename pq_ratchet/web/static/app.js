@@ -172,8 +172,11 @@
     } else if (window.location.host) {
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       wsUrl = `${protocol}//${window.location.host}/ws/${encodeURIComponent(username)}`;
+      configuredRelayHost = `${window.location.protocol}//${window.location.host}`;
     } else {
+      // Local standalone file:// mode default
       wsUrl = `ws://127.0.0.1:8000/ws/${encodeURIComponent(username)}`;
+      configuredRelayHost = "http://127.0.0.1:8000";
     }
 
     ws = new WebSocket(wsUrl);
@@ -561,20 +564,28 @@
     if (configuredRelayHost) {
       let httpBase = configuredRelayHost.replace(/^wss:\/\//i, "https://").replace(/^ws:\/\//i, "http://");
       if (!httpBase.startsWith("http://") && !httpBase.startsWith("https://")) {
-        httpBase = (window.location.protocol === "https:" ? "https://" : "http://") + httpBase;
+        const proto = (window.location.protocol === "https:") ? "https://" : "http://";
+        httpBase = proto + httpBase;
       }
       apiBase = httpBase.replace(/\/+$/, "");
+    } else if (window.location.protocol === "file:") {
+      apiBase = "http://127.0.0.1:8000";
     }
 
     async function poll() {
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
       try {
-        const resp = await fetch(`${apiBase}/api/online-users`, { cache: "no-store" });
+        const resp = await fetch(`${apiBase}/api/online-users`, {
+          cache: "no-store",
+          mode: "cors",
+        });
         if (resp.ok) {
           const data = await resp.json();
           renderOnlineDirectory(data.users || []);
         }
-      } catch (e) {}
+      } catch (e) {
+        console.warn("Online directory poll failed:", e);
+      }
     }
     poll();
     setInterval(poll, 4000);

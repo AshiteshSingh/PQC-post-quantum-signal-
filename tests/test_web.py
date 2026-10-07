@@ -110,6 +110,35 @@ class TestEphemeralWebPQRatchet(unittest.TestCase):
             ) as ws_eve:
                 ws_eve.receive_text()
 
+    def test_file_protocol_opaque_origin_websocket_accepted(self):
+        """Verifies that standalone offline file:// clients (Origin: null) connect successfully."""
+        with self.client.websocket_connect(
+            "/ws/FileUser",
+            headers={"origin": "null", "host": "127.0.0.1:8000"},
+        ) as ws:
+            data = json.loads(ws.receive_text())
+            self.assertEqual(data["type"], "session_registered")
+            self.assertEqual(data["username"], "FileUser")
+
+    def test_cors_and_corp_headers_for_standalone_clients(self):
+        """Verifies CORS and CORP headers permit cross-origin directory fetching from file:// and external origins."""
+        # GET request with opaque origin
+        resp = self.client.get("/api/online-users", headers={"origin": "null"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.headers.get("access-control-allow-origin"), "*")
+        self.assertEqual(resp.headers.get("cross-origin-resource-policy"), "cross-origin")
+
+        # OPTIONS preflight
+        preflight = self.client.options(
+            "/api/online-users",
+            headers={"origin": "null", "access-control-request-method": "GET"},
+        )
+        self.assertEqual(preflight.status_code, 200)
+        self.assertEqual(preflight.headers.get("access-control-allow-origin"), "*")
+        self.assertEqual(preflight.headers.get("cross-origin-resource-policy"), "cross-origin")
+        self.assertIn("GET", preflight.headers.get("access-control-allow-methods", ""))
+
+
     def test_payload_ceiling(self):
         with self.client.websocket_connect("/ws/Dave") as ws_dave:
             json.loads(ws_dave.receive_text())  # registration

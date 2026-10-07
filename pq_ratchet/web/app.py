@@ -19,7 +19,7 @@ import asyncio
 from typing import Dict, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from urllib.parse import urlparse
 
@@ -44,6 +44,17 @@ class ZeroTraceMiddleware(BaseHTTPMiddleware):
     """
     async def dispatch(self, request, call_next):
         request.scope["client"] = ("0.0.0.0", 0)
+
+        # Handle CORS preflight requests for cross-origin and standalone file:// clients
+        if request.method == "OPTIONS":
+            preflight = Response(status_code=200)
+            preflight.headers["Access-Control-Allow-Origin"] = "*"
+            preflight.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+            preflight.headers["Access-Control-Allow-Headers"] = "*"
+            preflight.headers["Access-Control-Max-Age"] = "86400"
+            preflight.headers["Cross-Origin-Resource-Policy"] = "cross-origin"
+            return preflight
+
         response = await call_next(request)
 
         # Anti-Forensic & Anti-Cache Headers
@@ -68,11 +79,16 @@ class ZeroTraceMiddleware(BaseHTTPMiddleware):
             "base-uri 'none';"
         )
 
+        # Decoupled Standalone Client CORS & CORP (supports file:// and external origins)
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+        response.headers["Cross-Origin-Resource-Policy"] = "cross-origin"
+
         # Transport & Execution Environment Isolation
         response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains; preload"
         response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
         response.headers["Cross-Origin-Embedder-Policy"] = "require-corp"
-        response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
 
         if "server" in response.headers:
@@ -213,16 +229,21 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
     origin = websocket.headers.get("origin")
     host = websocket.headers.get("host")
     if origin:
-        parsed_origin = urlparse(origin).netloc.lower()
-        allowed = {"localhost", "127.0.0.1", "testserver"}
-        if host:
-            allowed.add(host.lower())
-            if ":" in host:
-                allowed.add(host.split(":")[0].lower())
-        origin_host = parsed_origin.split(":")[0].lower() if ":" in parsed_origin else parsed_origin
-        if parsed_origin not in allowed and origin_host not in allowed:
-            await websocket.close(code=1008)
-            return
+        origin_lower = origin.strip().lower()
+        if origin_lower == "null":
+            # Opaque origin sent by browsers for local offline file:// execution and sandboxed contexts
+            pass
+        else:
+            parsed_origin = urlparse(origin).netloc.lower()
+            allowed = {"localhost", "127.0.0.1", "testserver"}
+            if host:
+                allowed.add(host.lower())
+                if ":" in host:
+                    allowed.add(host.split(":")[0].lower())
+            origin_host = parsed_origin.split(":")[0].lower() if ":" in parsed_origin else parsed_origin
+            if parsed_origin not in allowed and origin_host not in allowed:
+                await websocket.close(code=1008)
+                return
 
     await websocket.accept()
     cleanup_expired_sessions()

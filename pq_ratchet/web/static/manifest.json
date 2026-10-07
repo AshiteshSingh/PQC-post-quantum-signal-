@@ -19,9 +19,9 @@
       "sri_sha384": "sha384-/jQXqAAJLZ1n5I8SwKDlF0A8PmfRKpQ1DOZe1JwDpwrjqYcgskqTSz7tbiueopMP"
     },
     "app.js": {
-      "bytes": 29653,
-      "sha256": "50f272fc1a8d8bc01fe768e4e98caab01a90bb1ca06a8876b415cd70a6454ae2",
-      "sri_sha384": "sha384-f/GeehofKW0joc2qIPXBhRtkeH6J4YaW8Wa8rvYdqL6R2k/xVl2nLE8C1/aY50/D"
+      "bytes": 30070,
+      "sha256": "f7804a2ce52fdd9221f00b86896618136ea26042ce3ece1527308e936d4acc74",
+      "sri_sha384": "sha384-4HNw3bhPaR1ICzSC3S5KiMZZDkUCofr35h6HWVUWxcT3BiEf05vK3mD6u+1VIfJL"
     }
   }
 }
