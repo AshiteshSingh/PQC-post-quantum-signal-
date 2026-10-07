@@ -11,6 +11,7 @@ import json
 import struct
 import hashlib
 import time
+import warnings
 from typing import Dict, List, Tuple, Optional, Callable, Set, Union
 from pq_ratchet.constants import AEAD_TAG_BYTES
 from pq_ratchet.primitives.identity import (
@@ -241,7 +242,7 @@ class PQP2PNode:
         await session.send_message(envelope)
         return True
 
-    async def send_relayed(
+    async def _send_relayed(
         self,
         target_peer_id: str,
         e2ee_payload: bytes,
@@ -249,27 +250,9 @@ class PQP2PNode:
         max_hops: int = 3,
     ) -> bool:
         """
-        Routes opaque ciphertext across P2P swarm via multi-hop blind relaying.
-
-        Operational & Security Specification:
-        1. Transport-Layer Protocol Framing Validation:
-           Validates that outgoing relayed payloads conform strictly to supported E2EE wire
-           packet framing specifications (FIPS 203/204 Handshake packets, or Double Ratchet wire
-           framing with minimum AEAD tag length >= 16 bytes). Rejects raw unencapsulated direct
-           application frames (e.g., TYPE_CHAT_DATA).
-        2. Cryptographic Security Boundary Demarcation:
-           Blind relays operate over opaque ciphertexts and do not hold the end-to-end symmetric
-           ratchet keys; consequently, transport relaying cannot cryptographically authenticate
-           or prove payload encryption.
-           Cryptographic confidentiality (IND-CCA2) and integrity (EUF-CMA) are enforced
-           exclusively at the session endpoints:
-           - Originator: Encrypts application payloads via `PQRatchetSession.ratchet_encrypt()`
-             (or `send_message_to_peer()` / `send_e2ee_chat()`).
-           - Recipient: Validates constant-time ChaCha20-Poly1305 MAC tag verification in
-             `PQRatchetSession.ratchet_decrypt()`. Forged, modified, or unauthenticated payloads
-             (including high-entropy plaintext) are unfailingly rejected at the recipient's
-             cryptographic boundary with a Poly1305 authentication error.
-        3. msg_type MUST be explicitly specified (no insecure default).
+        Internal low-level wire routing primitive.
+        Routes already-encrypted opaque wire frames across P2P swarm via multi-hop blind relaying.
+        Enforces protocol wire framing syntax (RatchetDataPacket, HandshakeInit, HandshakeResp).
         Complexity: O(k) fanout over k active peer links.
         """
         if msg_type == P2PMessageEnvelope.TYPE_E2EE_RATCHET_DATA:
@@ -337,6 +320,45 @@ class PQP2PNode:
                 pass
         return dispatched
 
+    async def send_relayed(
+        self,
+        target_peer_id: str,
+        e2ee_payload: bytes,
+        msg_type: int,
+        max_hops: int = 3,
+    ) -> bool:
+        """
+        [SECURITY WARNING: LOW-LEVEL WIRE ROUTING PRIMITIVE - NOT FOR APPLICATION PLAINTEXT]
+        ====================================================================================
+        ARCHITECTURAL & CONFIDENTIALITY LIMITATION:
+        This method is a low-level wire routing primitive designed strictly for routing
+        pre-encrypted protocol packets. While it enforces wire framing structure and minimum
+        tag length, it DOES NOT encrypt application data and CANNOT verify whether the
+        supplied payload originated from an active PQRatchetSession.
+
+        Direct callers that pass unencrypted or custom payloads to `send_relayed()` WILL
+        LEAK DATA IN THE CLEAR TO INTERMEDIATE RELAY NODES.
+
+        SAFE APPLICATION APIS:
+        Application callers must call `send_message_to_peer()` or `send_e2ee_chat()`. Those
+        APIs establish an authenticated post-quantum session (ML-KEM-768 + ML-DSA-65) and
+        evaluate ChaCha20-Poly1305 AEAD ratchet encryption prior to transport dispatch.
+        ====================================================================================
+        """
+        warnings.warn(
+            "PQP2PNode.send_relayed() is a low-level wire routing primitive and does not "
+            "encrypt application payloads. Direct callers risk exposing data to intermediate relays. "
+            "Use send_e2ee_chat() or send_message_to_peer() for end-to-end encrypted messaging.",
+            category=UserWarning,
+            stacklevel=2,
+        )
+        return await self._send_relayed(
+            target_peer_id=target_peer_id,
+            e2ee_payload=e2ee_payload,
+            msg_type=msg_type,
+            max_hops=max_hops,
+        )
+
     async def send_e2ee_chat(
         self,
         target_peer_id: str,
@@ -391,7 +413,7 @@ class PQP2PNode:
                 hs_event = asyncio.Event()
                 self._pending_e2ee_inits[target_peer_id] = (session_candidate, hs_event)
 
-                dispatched = await self.send_relayed(
+                dispatched = await self._send_relayed(
                     target_peer_id=target_peer_id,
                     e2ee_payload=init_bytes,
                     msg_type=P2PMessageEnvelope.TYPE_E2EE_HANDSHAKE_INIT,
@@ -412,7 +434,7 @@ class PQP2PNode:
             return False
 
         ciphertext = e2ee_session.ratchet_encrypt(message)
-        return await self.send_relayed(
+        return await self._send_relayed(
             target_peer_id=target_peer_id,
             e2ee_payload=ciphertext,
             msg_type=P2PMessageEnvelope.TYPE_E2EE_RATCHET_DATA,
@@ -698,7 +720,7 @@ class PQP2PNode:
 
                 self._known_pks[origin] = sender_id_pk
 
-                await self.send_relayed(
+                await self._send_relayed(
                     target_peer_id=origin,
                     e2ee_payload=resp_bytes,
                     msg_type=P2PMessageEnvelope.TYPE_E2EE_HANDSHAKE_RESP,

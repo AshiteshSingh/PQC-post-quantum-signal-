@@ -525,6 +525,30 @@ class TestDecentralizedTransport(unittest.IsolatedAsyncioTestCase):
             )
         self.assertIn("shorter than AEAD tag", str(ctx.exception))
 
+    async def test_send_relayed_public_api_warning(self):
+        """
+        Validates that invoking the public send_relayed() API directly triggers a prominent
+        UserWarning emphasizing that it is an unauthenticated wire routing primitive that does
+        not encrypt application payloads.
+        """
+        import warnings
+        node_a_sk = IdentityPrivateKey.generate()
+        node_a = PQP2PNode(local_identity=node_a_sk, trusted_peers=[], listen_host="127.0.0.1", listen_port=19249)
+
+        # Mock HandshakeInit packet
+        _, init_bytes = PQRatchetSession.initiate_handshake(node_a_sk, node_a_sk.public_key())
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            await node_a.send_relayed(
+                target_peer_id="pqc_target",
+                e2ee_payload=init_bytes,
+                msg_type=P2PMessageEnvelope.TYPE_E2EE_HANDSHAKE_INIT,
+            )
+            self.assertTrue(any(issubclass(item.category, UserWarning) for item in w))
+            self.assertTrue(any("low-level wire routing primitive" in str(item.message) for item in w))
+
 
 if __name__ == "__main__":
     unittest.main()
+
