@@ -77,7 +77,7 @@ def generate_ephemeral_tls_cert(host: str = "127.0.0.1", additional_hosts: list[
     with open(key_path, "wb") as f:
         f.write(key.private_bytes(
             encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.TraditionalOpenSSL,
+            format=serialization.PrivateFormat.PKCS8,
             encryption_algorithm=serialization.NoEncryption(),
         ))
 

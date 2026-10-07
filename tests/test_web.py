@@ -255,6 +255,40 @@ class TestEphemeralWebPQRatchet(unittest.TestCase):
         self.assertFalse(is_loopback_host("192.168.1.100"))
         self.assertFalse(is_loopback_host("example.com"))
 
+    def test_ephemeral_tls_lifecycle_and_cleanup(self):
+        """
+        P3 Remediation Verification:
+        Ensures ephemeral TLS certificates and keys are written to a temp directory,
+        contain requested SANs including additional hosts, and cleanup_ephemeral_tls
+        securely overwrites key material and removes the directory.
+        """
+        import os
+        from pq_ratchet.web.tls import generate_ephemeral_tls_cert, cleanup_ephemeral_tls
+
+        cert_p, key_p, temp_dir = generate_ephemeral_tls_cert("192.168.1.50", additional_hosts=["chat.internal", "10.0.0.1"])
+        self.assertTrue(os.path.isfile(cert_p))
+        self.assertTrue(os.path.isfile(key_p))
+        self.assertTrue(os.path.isdir(temp_dir))
+
+        cleanup_ephemeral_tls(temp_dir)
+        self.assertFalse(os.path.exists(cert_p))
+        self.assertFalse(os.path.exists(key_p))
+        self.assertFalse(os.path.exists(temp_dir))
+
+    def test_wildcard_tls_requires_tls_host(self):
+        """
+        P2 Remediation Verification:
+        Binding to 0.0.0.0 or :: with --tls requires --tls-host to avoid SAN mismatch.
+        """
+        import sys
+        import subprocess
+
+        cmd = [sys.executable, "-m", "pq_ratchet.cli", "web", "--host", "0.0.0.0", "--tls"]
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("CERTIFICATE SAN MISMATCH", proc.stdout)
+        self.assertIn("--tls-host", proc.stdout)
+
     def test_cors_and_corp_headers_for_standalone_clients(self):
         """Verifies CORS and CORP headers permit cross-origin directory fetching from file:// and external origins."""
         # GET request with opaque origin
