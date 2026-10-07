@@ -491,6 +491,50 @@ class TestDecentralizedTransport(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(p, 8080)
         self.assertIsNone(k)
 
+    def test_parse_host_port_ipv6_and_ipv4(self):
+        """
+        Validates that parse_host_port correctly parses bracketed IPv6 listen endpoints
+        (e.g., [::1]:9100), bracketed public IPv6, standard IPv4, and hostnames.
+        """
+        from pq_ratchet.cli import parse_host_port
+
+        # Localhost bracketed IPv6
+        h, p = parse_host_port("[::1]:9100")
+        self.assertEqual(h, "::1")
+        self.assertEqual(p, 9100)
+
+        # Full global bracketed IPv6
+        h, p = parse_host_port("[2001:0db8:85a3:0000:0000:8a2e:0370:7334]:9150")
+        self.assertEqual(h, "2001:0db8:85a3:0000:0000:8a2e:0370:7334")
+        self.assertEqual(p, 9150)
+
+        # Standard IPv4
+        h, p = parse_host_port("0.0.0.0:9100")
+        self.assertEqual(h, "0.0.0.0")
+        self.assertEqual(p, 9100)
+
+        h, p = parse_host_port("127.0.0.1:8000")
+        self.assertEqual(h, "127.0.0.1")
+        self.assertEqual(p, 8000)
+
+        # Hostname
+        h, p = parse_host_port("localhost:9050")
+        self.assertEqual(h, "localhost")
+        self.assertEqual(p, 9050)
+
+        # Port-only with default host
+        h, p = parse_host_port(":9200", default_host="127.0.0.1")
+        self.assertEqual(h, "127.0.0.1")
+        self.assertEqual(p, 9200)
+
+        # Malformed inputs
+        with self.assertRaises(ValueError):
+            parse_host_port("[::1")
+        with self.assertRaises(ValueError):
+            parse_host_port("[::1]")
+        with self.assertRaises(ValueError):
+            parse_host_port("no_port_here")
+
     async def test_send_relayed_framing_rejection_sub_tag_ciphertext(self):
         """
         Validates that send_relayed() enforces protocol framing syntax by rejecting

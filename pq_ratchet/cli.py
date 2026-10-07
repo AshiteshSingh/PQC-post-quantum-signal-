@@ -63,6 +63,33 @@ def load_public_key(path: str) -> IdentityPublicKey:
     return IdentityPublicKey.from_bytes(raw_pk)
 
 
+def parse_host_port(endpoint: str, default_host: str = "0.0.0.0") -> Tuple[str, int]:
+    """
+    Parses a host:port network endpoint specifier into (host, port).
+    Supports bracketed IPv6 (e.g., '[::1]:9100'), standard IPv4 ('0.0.0.0:9100'),
+    and hostnames ('localhost:9100').
+    """
+    endpoint = endpoint.strip()
+    if endpoint.startswith("["):
+        bracket_end = endpoint.find("]")
+        if bracket_end == -1:
+            raise ValueError(f"Malformed bracketed IPv6 address: '{endpoint}'")
+        host = endpoint[1:bracket_end]
+        rest = endpoint[bracket_end + 1:]
+        if not rest.startswith(":"):
+            raise ValueError(f"Missing port in endpoint specifier: '{endpoint}'. Expected '[ipv6]:port'")
+        port = int(rest[1:])
+        return host, port
+
+    if ":" not in endpoint:
+        raise ValueError(f"Invalid endpoint format: '{endpoint}'. Expected 'host:port' or '[ipv6]:port'")
+
+    parts = endpoint.rsplit(":", 1)
+    host = parts[0] or default_host
+    port = int(parts[1])
+    return host, port
+
+
 def parse_bootstrap_endpoint(entry: str) -> Tuple[str, int, Optional[str]]:
     """
     Parses a bootstrap node specifier into (host, port, Optional[key_path]).
@@ -367,9 +394,9 @@ async def run_p2p_chat(
 async def run_tor_status(proxy_addr: str):
     """Probes status of local Tor daemon."""
     from pq_ratchet.transport.tor import AsyncTorConnector
-    ph, pp = proxy_addr.split(":")
+    ph, pp = parse_host_port(proxy_addr, default_host="127.0.0.1")
     try:
-        _, w = await asyncio.wait_for(asyncio.open_connection(ph, int(pp)), timeout=1.5)
+        _, w = await asyncio.wait_for(asyncio.open_connection(ph, pp), timeout=1.5)
         w.close()
         await w.wait_closed()
         print(f"[+] Local Tor SOCKS5 daemon is ONLINE and responding at {proxy_addr}")
@@ -500,23 +527,23 @@ def main():
 
     elif args.subcommand == "pipe":
         if args.pipe_mode == "send":
-            host, port_str = args.to.split(":")
+            host, port = parse_host_port(args.to)
             t_proxy = None
             if args.tor_proxy:
-                ph, pp = args.tor_proxy.split(":")
-                t_proxy = (ph, int(pp))
-            asyncio.run(run_pipe_send(host, int(port_str), args.key, args.peer_pub, via_tor=args.via_tor, tor_proxy=t_proxy))
+                ph, pp = parse_host_port(args.tor_proxy, default_host="127.0.0.1")
+                t_proxy = (ph, pp)
+            asyncio.run(run_pipe_send(host, port, args.key, args.peer_pub, via_tor=args.via_tor, tor_proxy=t_proxy))
         elif args.pipe_mode == "recv":
-            host, port_str = args.listen.split(":")
-            asyncio.run(run_pipe_recv(host, int(port_str), args.key, args.peer_pub))
+            host, port = parse_host_port(args.listen)
+            asyncio.run(run_pipe_recv(host, port, args.key, args.peer_pub))
 
     elif args.subcommand == "tunnel":
         if args.tunnel_mode == "server":
-            lhost, lport = args.listen.split(":")
-            thost, tport = args.target.split(":")
+            lhost, lport = parse_host_port(args.listen)
+            thost, tport = parse_host_port(args.target)
             sk = load_private_key(args.key)
             peer_pk = load_public_key(args.peer_pub) if args.peer_pub else None
-            server = PQTunnelServer(lhost, int(lport), thost, int(tport), sk, peer_pk)
+            server = PQTunnelServer(lhost, lport, thost, tport, sk, peer_pk)
             print(f"[+] Post-Quantum Tunnel Server active on {args.listen} -> forwarding to {args.target}")
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
@@ -526,11 +553,11 @@ def main():
             except KeyboardInterrupt:
                 loop.run_until_complete(server.stop())
         elif args.tunnel_mode == "client":
-            lhost, lport = args.listen.split(":")
-            shost, sport = args.server.split(":")
+            lhost, lport = parse_host_port(args.listen)
+            shost, sport = parse_host_port(args.server)
             sk = load_private_key(args.key)
             peer_pk = load_public_key(args.peer_pub)
-            client = PQTunnelClient(lhost, int(lport), shost, int(sport), sk, peer_pk)
+            client = PQTunnelClient(lhost, lport, shost, sport, sk, peer_pk)
             print(f"[+] Post-Quantum Tunnel Client listening on {args.listen} -> routing to {args.server}")
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
@@ -542,8 +569,8 @@ def main():
 
     elif args.subcommand == "p2p":
         if args.p2p_mode == "node":
-            lhost, lport = args.listen.split(":")
-            asyncio.run(run_p2p_node(lhost, int(lport), args.key, args.bootstrap, args.peer_pub))
+            lhost, lport = parse_host_port(args.listen)
+            asyncio.run(run_p2p_node(lhost, lport, args.key, args.bootstrap, args.peer_pub))
         elif args.p2p_mode == "chat":
             asyncio.run(run_p2p_chat(args.key, args.peer_pub, args.target_peer, args.port, args.bootstrap, getattr(args, "bootstrap_pub", None)))
 
@@ -554,12 +581,12 @@ def main():
             run_tor_onion_gen(args.dir, args.virtual_port, args.target_port)
 
     elif args.subcommand == "chat":
-        host, port_str = args.addr.split(":")
+        host, port = parse_host_port(args.addr)
         t_proxy = None
         if args.tor_proxy:
-            ph, pp = args.tor_proxy.split(":")
-            t_proxy = (ph, int(pp))
-        asyncio.run(run_chat(args.mode, host, int(port_str), args.key, args.peer_pub, via_tor=args.via_tor, tor_proxy=t_proxy))
+            ph, pp = parse_host_port(args.tor_proxy, default_host="127.0.0.1")
+            t_proxy = (ph, pp)
+        asyncio.run(run_chat(args.mode, host, port, args.key, args.peer_pub, via_tor=args.via_tor, tor_proxy=t_proxy))
 
     elif args.subcommand == "benchmark":
         from benchmarks.benchmark_ratchet import run_benchmarks
