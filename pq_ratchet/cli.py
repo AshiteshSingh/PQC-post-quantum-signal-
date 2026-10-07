@@ -538,7 +538,7 @@ def main():
     p_web.add_argument("--port", type=int, default=8000, help="Port to listen on (default: 8000)")
     p_web.add_argument("--ssl-keyfile", default=None, help="SSL private key file path for HTTPS / WSS")
     p_web.add_argument("--ssl-certfile", default=None, help="SSL certificate file path for HTTPS / WSS")
-    p_web.add_argument("--tls", action="store_true", help="Generate ephemeral self-signed TLS cert for instant HTTPS/WSS")
+    p_web.add_argument("--tls", action="store_true", help="Generate ephemeral self-signed TLS cert for development/local HTTPS/WSS (classical Ed25519; not PQ-TLS, untrusted by browsers)")
     p_web.add_argument("--tls-host", nargs="*", default=[], help="Additional hostnames/IPs to include in generated TLS certificate SANs")
     p_web.add_argument("--allow-insecure-http", action="store_true", help="Allow plaintext HTTP on non-loopback network interfaces (only when terminating TLS at a trusted reverse proxy)")
     p_web.add_argument("--pairing-token", default=None, help="Pairing token for authenticating opaque/file:// origins")
@@ -658,8 +658,10 @@ def main():
             cert_p, key_p, ephemeral_tls_dir = generate_ephemeral_tls_cert(args.host if args.host not in _wildcard_binds else "127.0.0.1", additional_hosts=args.tls_host)
             ssl_certfile = cert_p
             ssl_keyfile = key_p
-            print("[+] Generated ephemeral self-signed TLS certificate for HTTPS/WSS encryption.")
-            print(f"    Key material staged in: {ephemeral_tls_dir} (will be securely wiped on shutdown)")
+            print("[+] Generated ephemeral self-signed TLS certificate (Classical Ed25519; development/local only).")
+            print("    WARNING: Untrusted by browsers by default; does NOT provide Post-Quantum TLS.")
+            print("    For production, supply trusted CA certificates via --ssl-certfile and --ssl-keyfile.")
+            print(f"    Key material staged in: {ephemeral_tls_dir} (best-effort wipe on shutdown)")
 
         if args.pairing_token:
             from pq_ratchet.web.app import set_pairing_token

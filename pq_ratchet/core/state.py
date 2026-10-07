@@ -78,7 +78,13 @@ class SessionState:
 
     def zeroize_all(self) -> None:
         """
-        Destroys all active session key material in memory.
+        Best-effort destruction of active session key material in memory.
+        Overwrites mutable bytearray key buffers in-place and dereferences
+        ephemeral and identity key objects to enable Python GC reclamation.
+
+        LIMITATION:
+        CPython runtime memory allocation, immutable bytes objects, and opaque
+        CFFI / OpenSSL key structures cannot be deterministically zeroized from Python userland.
         """
         zeroize(self.root_key)
         if self.sending_chain_key is not None:
@@ -91,3 +97,9 @@ class SessionState:
         for k in self.skipped_keys.values():
             zeroize(k)
         self.skipped_keys.clear()
+
+        # Dereference ephemeral and long-term key objects
+        self.local_ephem_sk = None
+        self.remote_ephem_pk = None
+        self.local_identity = None
+        self.remote_identity = None

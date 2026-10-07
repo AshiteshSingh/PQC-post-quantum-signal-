@@ -361,9 +361,10 @@ class PQRatchetSession:
         aead = ChaCha20Poly1305(message_key)
         ciphertext = aead.encrypt(nonce, plaintext, ad)
 
-        # Clear message key from memory
-        mk_buf = bytearray(message_key)
-        zeroize(mk_buf)
+        # Explicitly unbind message key reference.
+        # Note: message_key is an immutable bytes instance from HMAC; CPython does not permit
+        # in-place memory mutation of immutable bytes from userland. Reference unbinding enables GC.
+        del message_key
 
         final_packet = RatchetDataPacket(
             epoch=epoch,
@@ -483,7 +484,7 @@ class PQRatchetSession:
             plaintext = aead.decrypt(nonce, packet.ciphertext, ad)
         except Exception:
             # Authentication failed! Do not commit the draft state.
-            zeroize(bytearray(message_key))
+            del message_key
             raise ValueError("Cryptographic verification failure: invalid AEAD tag")
 
         # Decryption succeeded. Commit state safely with explicit memory zeroization.
@@ -511,8 +512,7 @@ class PQRatchetSession:
         for ep, sq, key in skipped_keys:
             self.state.store_skipped_key(ep, sq, key)
 
-        mk_buf = bytearray(message_key)
-        zeroize(mk_buf)
+        del message_key
         return plaintext
 
     def close(self) -> None:

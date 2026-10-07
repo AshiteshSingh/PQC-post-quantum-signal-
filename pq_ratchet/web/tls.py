@@ -86,18 +86,27 @@ def generate_ephemeral_tls_cert(host: str = "127.0.0.1", additional_hosts: list[
 
 def cleanup_ephemeral_tls(temp_dir: str) -> None:
     """
-    Securely removes ephemeral TLS key material from disk.
-    Overwrites key file contents with random bytes before deletion
-    to mitigate recovery from unencrypted swap or journal.
+    Performs best-effort destruction of ephemeral TLS key material on disk.
+    Overwrites the existing key file in-place with random bytes before directory unlinking.
+
+    LIMITATION (Best-Effort Cleanup):
+    Modern SSD Flash Translation Layers (FTL wear-leveling), copy-on-write filesystems
+    (ZFS, Btrfs, APFS), and OS journal buffers prevent guaranteeing deterministic physical
+    flash cell zeroization from user-space software.
     """
     if not temp_dir or not os.path.isdir(temp_dir):
         return
     key_path = os.path.join(temp_dir, "key.pem")
-    if os.path.exists(key_path):
-        size = os.path.getsize(key_path)
-        with open(key_path, "wb") as f:
-            f.write(os.urandom(size))
-            f.flush()
-            os.fsync(f.fileno())
+    if os.path.isfile(key_path):
+        try:
+            size = os.path.getsize(key_path)
+            if size > 0:
+                with open(key_path, "r+b") as f:
+                    f.seek(0)
+                    f.write(os.urandom(size))
+                    f.flush()
+                    os.fsync(f.fileno())
+        except Exception:
+            pass
     import shutil
     shutil.rmtree(temp_dir, ignore_errors=True)

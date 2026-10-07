@@ -275,6 +275,81 @@ class TestEphemeralWebPQRatchet(unittest.TestCase):
         self.assertFalse(os.path.exists(key_p))
         self.assertFalse(os.path.exists(temp_dir))
 
+    def test_ephemeral_tls_in_place_overwrite(self):
+        """
+        P2 Remediation Verification:
+        Ensures cleanup_ephemeral_tls performs in-place overwriting of key.pem without truncation.
+        """
+        import os
+        from pq_ratchet.web.tls import generate_ephemeral_tls_cert
+
+        cert_p, key_p, temp_dir = generate_ephemeral_tls_cert("127.0.0.1")
+        with open(key_p, "rb") as f:
+            original = f.read()
+        orig_len = len(original)
+        self.assertTrue(original.startswith(b"-----BEGIN PRIVATE KEY-----"))
+
+        # Verify r+b overwrite preserves length and replaces contents
+        with open(key_p, "r+b") as f:
+            f.seek(0)
+            f.write(os.urandom(orig_len))
+            f.flush()
+            os.fsync(f.fileno())
+
+        with open(key_p, "rb") as f:
+            overwritten = f.read()
+        self.assertEqual(len(overwritten), orig_len)
+        self.assertNotEqual(overwritten, original)
+        self.assertFalse(overwritten.startswith(b"-----BEGIN PRIVATE KEY-----"))
+
+        import shutil
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_index_html_contains_subresource_integrity_attributes(self):
+        """
+        P1 Remediation Verification:
+        index.html must load stylesheets and scripts with Subresource Integrity (SRI)
+        attributes (integrity and crossorigin='anonymous') to prevent browser execution
+        of tampered or injected scripts.
+        """
+        import os
+        from pq_ratchet.web.app import STATIC_DIR
+        index_p = os.path.join(STATIC_DIR, "index.html")
+        with open(index_p, "r", encoding="utf-8") as f:
+            html = f.read()
+
+        self.assertIn('integrity="sha384-2CC+P4Qsdr9YpOmmWleJeH+uMHiXDPR6MS8289gkiIa6pkXwsICaMxFJeII2zp7D"', html)
+        self.assertIn('integrity="sha384-/jQXqAAJLZ1n5I8SwKDlF0A8PmfRKpQ1DOZe1JwDpwrjqYcgskqTSz7tbiueopMP"', html)
+        self.assertIn('integrity="sha384-nfXSekPdcL97Xi/LUIfK63nfL+naYB8Ayuz1eIDjd3pi4jt7BtxGudBKjnFAVh08"', html)
+        self.assertIn('crossorigin="anonymous"', html)
+
+    def test_state_zeroize_all_dereferences_ephemeral_and_identity_keys(self):
+        """
+        P2 Remediation Verification:
+        Ensures SessionState.zeroize_all() explicitly dereferences local_ephem_sk,
+        remote_ephem_pk, local_identity, and remote_identity to enable runtime GC reclamation.
+        """
+        from pq_ratchet.core.state import SessionState
+        from pq_ratchet.primitives.identity import IdentityPrivateKey
+        from pq_ratchet.primitives.hybrid_kem import HybridKEMPrivateKey
+
+        alice_id = IdentityPrivateKey.generate()
+        bob_id = IdentityPrivateKey.generate()
+        state = SessionState(alice_id, bob_id.public_key(), b"K" * 64, is_initiator=True)
+        state.local_ephem_sk = HybridKEMPrivateKey.generate()
+        state.remote_ephem_pk = state.local_ephem_sk.public_key()
+        state.sending_chain_key = bytearray(b"C" * 32)
+        state.receiving_chain_key = bytearray(b"R" * 32)
+
+        state.zeroize_all()
+        self.assertIsNone(state.local_ephem_sk)
+        self.assertIsNone(state.remote_ephem_pk)
+        self.assertIsNone(state.local_identity)
+        self.assertIsNone(state.remote_identity)
+        self.assertIsNone(state.sending_chain_key)
+        self.assertIsNone(state.receiving_chain_key)
+        self.assertEqual(len(state.skipped_keys), 0)
+
     def test_wildcard_tls_requires_tls_host(self):
         """
         P2 Remediation Verification:

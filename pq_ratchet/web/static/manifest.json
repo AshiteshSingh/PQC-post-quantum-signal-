@@ -9,9 +9,9 @@
       "bytes": 30945
     },
     "index.html": {
-      "sha256": "8fc1b6c861bda20e25ade7a383eacbe3d775e74088401fbdfe5f09de3517c8be",
-      "sri_sha384": "sha384-L4IQu470tCiEYnE0rBPDW26iUfv5DA8H9lTHcpKgVoj4+MCetIGJz6Oij+Zes7R/",
-      "bytes": 9812
+      "sha256": "1e093e851a48733af4fba32c90294b2effafd4a9e2ea0f6570f1b1510786c455",
+      "sri_sha384": "sha384-EDmsKlk4ZA+M3OoYGxAsPMHkoUCHO1R/dxiT1ABM53wI7qA5N8lpsD6RM4b2hM3J",
+      "bytes": 10136
     },
     "pq-crypto.bundle.js": {
       "sha256": "4f988e3ce7583b871e121f4e902c47cb4a3134420bc5f6ab3d3577bb4ef391b4",
