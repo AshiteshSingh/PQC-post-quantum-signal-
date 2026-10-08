@@ -15,6 +15,7 @@ from pq_ratchet.constants import (
     DOMAIN_AUTH_RESPONDER,
     MAX_RATCHET_SKIP_GAP,
     MAX_PACKET_PAYLOAD_BYTES,
+    AEAD_TAG_BYTES,
 )
 from pq_ratchet.primitives.identity import (
     IdentityPrivateKey,
@@ -328,8 +329,21 @@ class PQRatchetSession:
         Attaches pending KEM ratchet transitions if present.
         Complexity: O(|plaintext|) with O(1) symmetric chain advancement.
         """
-        if len(plaintext) > MAX_PACKET_PAYLOAD_BYTES:
-            raise ValueError(f"Plaintext exceeds maximum bound ({MAX_PACKET_PAYLOAD_BYTES} bytes)")
+        # Bound the serialized wire packet, not only the plaintext. Check before
+        # advancing chain state so an oversized packet cannot desynchronize peers.
+        packet_overhead = (
+            15  # fixed RatchetDataPacket header
+            + 4  # ciphertext length field
+            + AEAD_TAG_BYTES
+            + (len(self._pending_kem_ct) if self._pending_kem_ct is not None else 0)
+            + (len(self._pending_next_kem_pk) if self._pending_next_kem_pk is not None else 0)
+        )
+        if len(plaintext) + packet_overhead > MAX_PACKET_PAYLOAD_BYTES:
+            max_plaintext = MAX_PACKET_PAYLOAD_BYTES - packet_overhead
+            raise ValueError(
+                f"Ratchet packet exceeds maximum bound ({MAX_PACKET_PAYLOAD_BYTES} bytes); "
+                f"maximum plaintext for this packet is {max_plaintext} bytes"
+            )
         if self.state.sending_chain_key is None:
             raise RuntimeError("Sending chain key not initialized")
 
