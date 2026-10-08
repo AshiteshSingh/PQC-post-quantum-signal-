@@ -90,11 +90,11 @@ The native Python source now drafts the next sending chain and commits the chain
 
 ### Confirmed control and remaining limit — relay KEM work is bounded in Python, not equivalently in the browser
 
-The current Python ratchet and relay peer tracker cap failed KEM transitions, including across active/staged candidates and session replacement ([ratchet.py](pq_ratchet/core/ratchet.py#L100-L118), [p2p.py](pq_ratchet/transport/p2p.py#L296-L335), [p2p.py](pq_ratchet/transport/p2p.py#L1131-L1152)). The browser still performs KEM decapsulation and may generate/encapsulate fresh keys before AEAD verification and before checking the sequence gap ([pqc-engine.js](web_builder/src/pqc-engine.js#L941-L983)). The relay's general per-connection limit of 25 requests per second is a coarse cap, not a client-side cryptographic-work budget ([app.py](pq_ratchet/web/app.py#L591-L599)).
+The current Python ratchet and P2P relay peer tracker cap failed KEM transitions, including across active/staged candidates and session replacement ([ratchet.py](pq_ratchet/core/ratchet.py#L100-L118), [p2p.py](pq_ratchet/transport/p2p.py#L296-L335), [p2p.py](pq_ratchet/transport/p2p.py#L1131-L1152)). The web relay now checks ratchet framing, tag length, KEM-field pairing, transition sequence zero, and epoch overflow before forwarding ([app.py](pq_ratchet/web/app.py#L747-L760)). It does not authenticate/decrypt the packet and cannot protect a browser from a malicious relay that bypasses those checks. The browser still performs KEM decapsulation and may generate/encapsulate fresh keys before AEAD verification and before checking the sequence gap ([pqc-engine.js](web_builder/src/pqc-engine.js#L941-L983)). The relay's general per-connection limit of 25 requests per second is a coarse cap, not a client-side cryptographic-work budget ([app.py](pq_ratchet/web/app.py#L591-L599)).
 
 **Impact:** A peer able to deliver forged transition packets can cause repeated expensive browser work up to the relay's general traffic limit. This is a resource-exhaustion and cross-client parity concern; the source alone does not establish that confidentiality is broken.
 
-**Required before production:** Apply equivalent transition-specific limits before decapsulation in every client, check counters/epoch/field pairing before expensive work, and test adversarial load and recovery behavior.
+**Required before production:** Apply equivalent transition-specific limits before decapsulation in every client, preserve the relay's framing/invariant checks as defense in depth, and test adversarial load and recovery behavior.
 
 ## Review conclusion
 
