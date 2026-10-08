@@ -81,6 +81,7 @@ class TestTransport(unittest.IsolatedAsyncioTestCase):
                     writer=writer,
                     local_identity=bob_id,
                     expected_remote_identity=None,
+                    allow_tofu=True,
                 )
                 msg = await server_session.recv_message()
                 await server_session.send_message(b"ECHO:" + msg)

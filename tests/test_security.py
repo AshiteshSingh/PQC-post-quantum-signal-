@@ -1,6 +1,7 @@
 """
 tests.test_security
-Formal empirical verification of Forward Secrecy (FS) and Post-Compromise Security (PCS).
+Behavioral regression scenarios for ratchet state evolution; these are not a formal proof
+of forward secrecy or post-compromise security.
 """
 
 import unittest

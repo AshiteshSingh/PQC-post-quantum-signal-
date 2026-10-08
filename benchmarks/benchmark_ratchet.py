@@ -60,8 +60,8 @@ def run_benchmarks() -> None:
     ct, _ = hybrid_pk.encapsulate()
 
     benchmark_op("Hybrid KEM Keygen (ML-KEM-768 + X25519)", lambda: HybridKEMPrivateKey.generate(), 50)
-    benchmark_op("Hybrid KEM Encapsulate (Dual-PRF)", lambda: hybrid_pk.encapsulate(), 100)
-    benchmark_op("Hybrid KEM Decapsulate (Dual-PRF)", lambda: hybrid_sk.decapsulate(ct), 100)
+    benchmark_op("Hybrid KEM Encapsulate (HKDF combiner)", lambda: hybrid_pk.encapsulate(), 100)
+    benchmark_op("Hybrid KEM Decapsulate (HKDF combiner)", lambda: hybrid_sk.decapsulate(ct), 100)
 
     # 2. ML-DSA-65 Authentication Benchmarks
     id_sk = IdentityPrivateKey.generate()
@@ -69,7 +69,7 @@ def run_benchmarks() -> None:
     test_msg = os.urandom(64)
     sig = id_sk.sign(test_msg)
 
-    benchmark_op("ML-DSA-65 Keygen (FIPS 204 Level 3)", lambda: IdentityPrivateKey.generate(), 50)
+    benchmark_op("ML-DSA-65 Keygen (NIST Category 3)", lambda: IdentityPrivateKey.generate(), 50)
     benchmark_op("ML-DSA-65 Sign (64-byte payload)", lambda: id_sk.sign(test_msg), 100)
     benchmark_op("ML-DSA-65 Verify (64-byte payload)", lambda: id_pk.verify(sig, test_msg), 100)
 
@@ -110,8 +110,8 @@ def run_benchmarks() -> None:
     print(f"| {'Prekey Signature':<38} | {'64 B (Ed25519)':<14} | {f'{MLDSA65_SIGNATURE_BYTES} B (ML-DSA)':<12} |")
     print(f"| {'KEM Ciphertext per Ratchet Turn':<38} | {'32 B (ECDH PK)':<14} | {f'{MLKEM768_CIPHERTEXT_BYTES + X25519_KEY_BYTES} B (Hybrid)':<12} |")
     print(f"| {'Symmetric Packet Overhead (Tag+AD)':<38} | {'16 B (Poly1305)':<14} | {'31 B (Framed)':<12} |")
-    print(f"| {'Quantum Security Margin':<38} | {'0 bits (Shor broken)':<14} | {'192 bits (FTQC)':<12} |")
     print("-" * 70 + "\n")
+    print("No protocol-level security estimate is measured by this benchmark.\n")
 
     a_sess.close()
     b_sess.close()

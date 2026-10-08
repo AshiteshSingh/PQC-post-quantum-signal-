@@ -1,19 +1,21 @@
 """
 pq_ratchet.transport.p2p
-Decentralized Post-Quantum Peer-to-Peer (P2P) Overlay Mesh Network.
-Implements self-authenticating PeerIDs, distributed peer exchange (PEX),
-and multi-hop zero-trust blind relaying over post-quantum ratcheted channels.
+Experimental peer-to-peer overlay mesh network.
+Implements key-derived peer identifiers, peer exchange (PEX),
+and multi-hop relaying over a custom ratcheted protocol.
 """
 
 import asyncio
 import base64
+import binascii
 import json
 import struct
 import hashlib
-import time
-import warnings
-from typing import Dict, List, Tuple, Optional, Callable, Set, Union
-from pq_ratchet.constants import AEAD_TAG_BYTES
+import re
+import secrets
+from collections import deque
+from typing import Dict, List, Tuple, Optional, Callable, Union
+from pq_ratchet.constants import AEAD_TAG_BYTES, MAX_PACKET_PAYLOAD_BYTES
 from pq_ratchet.primitives.identity import (
     IdentityPrivateKey,
     IdentityPublicKey,
@@ -27,9 +29,41 @@ from pq_ratchet.core.framing import (
 from pq_ratchet.transport.session import AsyncPQStreamSession
 
 
+MAX_SEEN_RELAY_IDS = 10000
+MAX_SEEN_HANDSHAKE_INITS = 10000
+MAX_RELAY_HOPS = 3
+PEER_ID_PATTERN = re.compile(r"^pqc_[0-9a-f]{32}$")
+
+
+class _BoundedSeenSet:
+    """FIFO deduplication cache with an explicit memory bound."""
+
+    def __init__(self, max_entries: int) -> None:
+        self._max_entries = max_entries
+        self._order: deque[str] = deque()
+        self._values: set[str] = set()
+
+    def __contains__(self, value: str) -> bool:
+        return value in self._values
+
+    def add(self, value: str) -> bool:
+        if value in self._values:
+            return False
+        if len(self._order) >= self._max_entries:
+            self._values.discard(self._order.popleft())
+        self._order.append(value)
+        self._values.add(value)
+        return True
+
+    def clear(self) -> None:
+        self._order.clear()
+        self._values.clear()
+
+
 def derive_peer_id(pk: IdentityPublicKey) -> str:
     """
-    Computes deterministic self-authenticating 128-bit PeerID.
+    Computes a deterministic 128-bit identifier derived from the identity key.
+    The identifier does not establish who controls that key.
     Invariant: PeerID = Truncate_128(SHA3-256(MLDSA65_PK)).
     Complexity: O(|PK|) hashing.
     """
@@ -73,17 +107,7 @@ class P2PMessageEnvelope:
 
 
 class PQP2PNode:
-    """
-    Decentralized Peer-to-Peer Node with Post-Quantum E2EE links.
-    Guarantees:
-    1. Zero centralized servers: peer discovery via dynamic peer exchange (PEX).
-    2. Mutual quantum authentication: every peer link is bound to verified ML-DSA-65 identity.
-    3. Forward Secrecy & Post-Compromise Security: direct links and multi-hop overlay routes
-       advance post-quantum KEM Double Ratchet state (ML-KEM-768 + ML-DSA-65).
-    4. Zero-Trust Relays: intermediate hops are blind forwarders with zero access to plaintext.
-    5. Handshake Replay Resistance: anti-replay ephemeral key caches and staged session promotion
-       eliminate remote session-reset denial-of-service vectors.
-    """
+    """Experimental P2P node using the repository's unaudited custom protocol."""
     def __init__(
         self,
         local_identity: IdentityPrivateKey,
@@ -104,13 +128,13 @@ class PQP2PNode:
         self._running = False
         self._peers: Dict[str, AsyncPQStreamSession] = {}
         self._known_addresses: Dict[str, Tuple[str, int]] = {}  # peer_id -> (host, port)
-        self._seen_relay_ids: Set[str] = set()
+        self._seen_relay_ids = _BoundedSeenSet(MAX_SEEN_RELAY_IDS)
 
         # Multi-hop End-to-End Encryption session stores across relay mesh
         self._e2ee_sessions: Dict[str, PQRatchetSession] = {}
         self._staged_e2ee_sessions: Dict[str, PQRatchetSession] = {}
         self._pending_e2ee_inits: Dict[str, Tuple[PQRatchetSession, asyncio.Event]] = {}
-        self._seen_handshake_inits: Set[str] = set()
+        self._seen_handshake_inits = _BoundedSeenSet(MAX_SEEN_HANDSHAKE_INITS)
         self._known_pks: Dict[str, IdentityPublicKey] = {}
         for tp in self.trusted_peers:
             self._known_pks[derive_peer_id(tp)] = tp
@@ -170,6 +194,7 @@ class PQP2PNode:
             event.set()
         self._pending_e2ee_inits.clear()
         self._seen_handshake_inits.clear()
+        self._seen_relay_ids.clear()
 
     def register_peer_pk(self, pk: IdentityPublicKey) -> str:
         """
@@ -182,7 +207,7 @@ class PQP2PNode:
 
     def _get_peer_pk(self, peer_id: str) -> Optional[IdentityPublicKey]:
         """
-        Resolves peer public key by self-authenticating PeerID hash.
+        Resolves peer public key by its key-derived PeerID hash.
         Complexity: O(1) lookup.
         """
         if peer_id in self._known_pks:
@@ -286,9 +311,12 @@ class PQP2PNode:
                 "Only E2EE handshake or ratcheted ciphertext frames may be relayed."
             )
 
-        relay_msg_id = hashlib.sha256(
-            f"{time.time()}:{self.peer_id}:{target_peer_id}:{hashlib.sha256(e2ee_payload).hexdigest()}".encode()
-        ).hexdigest()[:16]
+        if not isinstance(target_peer_id, str) or not PEER_ID_PATTERN.fullmatch(target_peer_id):
+            raise ValueError("Invalid target peer identifier")
+        if type(max_hops) is not int or not 1 <= max_hops <= MAX_RELAY_HOPS:
+            raise ValueError(f"max_hops must be between 1 and {MAX_RELAY_HOPS}")
+
+        relay_msg_id = secrets.token_hex(16)
         self._seen_relay_ids.add(relay_msg_id)
 
         relay_packet = {
@@ -339,8 +367,8 @@ class PQP2PNode:
 
         SAFE APPLICATION APIS:
         Application callers must call `send_e2ee_chat()` or `send_message_to_peer()`. Those
-        APIs establish an authenticated post-quantum session (ML-KEM-768 + ML-DSA-65) and
-        evaluate ChaCha20-Poly1305 AEAD ratchet encryption prior to transport dispatch.
+        APIs establish a session using the custom ML-KEM/X25519 and ML-DSA protocol,
+        then apply ChaCha20-Poly1305 to application payloads before transport dispatch.
 
         INTERNAL PROTOCOL ROUTING:
         Transport implementations routing pre-encrypted wire frames must explicitly invoke
@@ -350,8 +378,8 @@ class PQP2PNode:
         raise RuntimeError(
             "PQP2PNode.send_relayed() is disabled in the public API to prevent accidental "
             "plaintext exposure across intermediate relays. Application messaging must use "
-            "send_e2ee_chat() or send_message_to_peer(), which perform authenticated "
-            "post-quantum double ratchet encryption. Internal protocol transport routing "
+            "send_e2ee_chat() or send_message_to_peer(), which use the custom ratchet. "
+            "Internal protocol transport routing "
             "must invoke _send_relayed() directly."
         )
 
@@ -365,12 +393,11 @@ class PQP2PNode:
         timeout: float = 5.0,
     ) -> bool:
         """
-        Guarantees zero-plaintext exposure across indirect multi-hop P2P mesh routes:
-        1. If direct peer link exists and not forced relay: transmits over link-layer post-quantum ratcheted stream.
-        2. If discovered via PEX and not forced relay: connects directly and transmits over post-quantum stream.
-        3. If indirect or forced relay: negotiates an end-to-end PQRatchetSession (ML-KEM-768 + ML-DSA-65)
-           over blind relay mesh, ratchets message under IND-CCA2 AEAD, and relays ciphertext.
-        Complexity: O(|message|) ChaCha20-Poly1305 encryption + O(1) symmetric chain step.
+        Routes messages over the experimental custom ratcheted protocol:
+        1. If a direct peer link exists and relay is not forced, sends over that stream.
+        2. If discovered via PEX, attempts a direct connection and sends over that stream.
+        3. If indirect or relay is forced, negotiates a PQRatchetSession over the blind relay mesh.
+        The custom protocol and its composition have not been independently reviewed.
         """
         if target_pk is not None:
             self._known_pks[target_peer_id] = target_pk
@@ -445,8 +472,8 @@ class PQP2PNode:
         force_relay: bool = False,
     ) -> bool:
         """
-        Sends message to peer using the optimal route with mandatory end-to-end encryption.
-        Delegates to send_e2ee_chat to guarantee zero-plaintext leakage across intermediate relays.
+        Sends a message through the selected route using the custom ratchet.
+        End-to-end confidentiality of the complete protocol has not been independently reviewed.
         """
         return await self.send_e2ee_chat(target_peer_id, message, target_pk=target_pk, force_relay=force_relay)
 
@@ -616,23 +643,43 @@ class PQP2PNode:
         """
         try:
             relay_pkt = json.loads(payload.decode("utf-8"))
-            relay_id = relay_pkt.get("relay_id")
-            if not relay_id or relay_id in self._seen_relay_ids:
+            if not isinstance(relay_pkt, dict) or set(relay_pkt) != {
+                "relay_id", "origin", "target", "hops_left", "msg_type", "payload_b64",
+            }:
                 return
 
-            if len(self._seen_relay_ids) > 10000:
-                self._seen_relay_ids.clear()
-            self._seen_relay_ids.add(relay_id)
-
-            target = relay_pkt.get("target")
+            relay_id = relay_pkt.get("relay_id")
             origin = relay_pkt.get("origin")
-            hops_left = int(relay_pkt.get("hops_left", 0))
-            msg_type = int(relay_pkt.get("msg_type", 0))
+            target = relay_pkt.get("target")
+            hops_left = relay_pkt.get("hops_left")
+            msg_type = relay_pkt.get("msg_type")
+            raw_payload_b64 = relay_pkt.get("payload_b64")
+            if (
+                not isinstance(relay_id, str)
+                or not re.fullmatch(r"[0-9a-f]{32}", relay_id)
+                or not isinstance(origin, str)
+                or not PEER_ID_PATTERN.fullmatch(origin)
+                or not isinstance(target, str)
+                or not PEER_ID_PATTERN.fullmatch(target)
+                or type(hops_left) is not int
+                or not 1 <= hops_left <= MAX_RELAY_HOPS
+                or type(msg_type) is not int
+                or msg_type not in {
+                    P2PMessageEnvelope.TYPE_E2EE_HANDSHAKE_INIT,
+                    P2PMessageEnvelope.TYPE_E2EE_HANDSHAKE_RESP,
+                    P2PMessageEnvelope.TYPE_E2EE_RATCHET_DATA,
+                }
+                or not isinstance(raw_payload_b64, str)
+                or len(raw_payload_b64) > ((MAX_PACKET_PAYLOAD_BYTES + 2) // 3) * 4
+            ):
+                return
 
-            raw_payload_b64 = relay_pkt.get("payload_b64", "")
             try:
-                raw_payload = base64.b64decode(raw_payload_b64.encode("ascii"))
-            except Exception:
+                raw_payload = base64.b64decode(raw_payload_b64.encode("ascii"), validate=True)
+            except (binascii.Error, UnicodeEncodeError, ValueError):
+                return
+
+            if len(raw_payload) > MAX_PACKET_PAYLOAD_BYTES or not self._seen_relay_ids.add(relay_id):
                 return
 
             if target == self.peer_id:
@@ -662,10 +709,9 @@ class PQP2PNode:
         """
         Processes inbound relayed frame destined for this node.
         Handles E2EE handshake round-trips and ratcheted message decryption.
-        Guarantees:
-        - Handshake Replay Resistance: detects and drops replayed ephemeral KEM keys.
-        - Zero Destructive Reset: staged sessions prevent unconfirmed inits from resetting active state.
-        Invariant: Rejects unauthenticated or unencrypted payloads.
+        It requires configured identity pins and checks handshake fingerprints in a
+        bounded recent-history cache. These checks do not prove replay resistance.
+        Incoming candidate sessions are staged in some paths before activation.
         """
         if not origin:
             return
@@ -677,19 +723,17 @@ class PQP2PNode:
                 if derive_peer_id(sender_id_pk) != origin:
                     return
 
-                if self.trusted_peers:
-                    if not any(sender_id_pk.to_bytes() == tp.to_bytes() for tp in self.trusted_peers):
-                        return
+                # A self-asserted PeerID binds a key to an identifier, but does
+                # not establish who owns that key. Require an out-of-band pin.
+                if not any(sender_id_pk.to_bytes() == tp.to_bytes() for tp in self.trusted_peers):
+                    return
 
-                # Anti-Replay Guard: ephemeral KEM PK and signature must never be re-used
+                # Check only the bounded recent-history window before doing handshake work.
                 init_fp = hashlib.sha256(
                     sender_id_pk.to_bytes() + init_pkt.ephemeral_kem_pk_bytes + init_pkt.signature
                 ).hexdigest()
                 if init_fp in self._seen_handshake_inits:
                     return
-                if len(self._seen_handshake_inits) > 10000:
-                    self._seen_handshake_inits.clear()
-                self._seen_handshake_inits.add(init_fp)
 
                 if origin in self._pending_e2ee_inits:
                     if self.peer_id < origin:
@@ -704,10 +748,14 @@ class PQP2PNode:
                     init_packet_bytes=raw_payload,
                     expected_remote_identity=sender_id_pk,
                 )
+                # Cache only after signature verification and response derivation succeed,
+                # so unauthenticated packets cannot evict recent replay entries.
+                if not self._seen_handshake_inits.add(init_fp):
+                    resp_session.close()
+                    return
 
-                # Staging: If an established session already exists with origin, stage
-                # the new session instead of destroying the active session. This guarantees
-                # immunity against replayed or spoofed handshake resets.
+                # Stage a replacement until confirmation so an unauthenticated or
+                # incomplete handshake does not immediately replace the active session.
                 if origin in self._e2ee_sessions:
                     if origin in self._staged_e2ee_sessions:
                         self._staged_e2ee_sessions[origin].close()

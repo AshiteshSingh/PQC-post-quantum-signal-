@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pq-ratchet"
 version = "0.1.0"
-description = "Production-grade Post-Quantum Signal Double Ratchet with ML-KEM-768 and ML-DSA-65"
+description = "Experimental post-quantum ratchet prototype using ML-KEM-768 and ML-DSA-65"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

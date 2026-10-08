@@ -1,6 +1,6 @@
 """
 pq_ratchet
-Research-Grade Post-Quantum Cryptographic Transport and KEM Double Ratchet Protocol.
+Experimental post-quantum cryptographic transport and KEM ratchet prototype.
 """
 
 __version__ = "0.1.0"

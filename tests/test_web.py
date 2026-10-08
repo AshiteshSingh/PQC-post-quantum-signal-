@@ -10,7 +10,9 @@ Integration test for Ephemeral Post-Quantum Web Chat:
 
 import unittest
 import json
+import base64
 from fastapi.testclient import TestClient
+from pq_ratchet.primitives.identity import IdentityPrivateKey
 from pq_ratchet.web.app import (
     app,
     online_users,
@@ -40,18 +42,25 @@ class TestEphemeralWebPQRatchet(unittest.TestCase):
         self.assertIn("users", data)
 
     def test_ephemeral_peer_pairing_and_mutual_wipe(self):
+        alice_identity = IdentityPrivateKey.generate()
+        bob_identity = IdentityPrivateKey.generate()
+        alice_pk_b64 = base64.b64encode(alice_identity.public_key().to_bytes()).decode("ascii")
+        bob_pk_b64 = base64.b64encode(bob_identity.public_key().to_bytes()).decode("ascii")
+
         # Alice registers
         with self.client.websocket_connect("/ws/Alice") as ws_alice:
             reg_a = json.loads(ws_alice.receive_text())
             self.assertEqual(reg_a["type"], "session_registered")
             self.assertEqual(reg_a["username"], "Alice")
             self.assertTrue(reg_a["ttl"] <= 3600)
+            ws_alice.send_text(json.dumps({"action": "register", "identity_pk": alice_pk_b64}))
 
             # Bob registers
             with self.client.websocket_connect("/ws/Bob") as ws_bob:
                 reg_b = json.loads(ws_bob.receive_text())
                 self.assertEqual(reg_b["type"], "session_registered")
                 self.assertEqual(reg_b["username"], "Bob")
+                ws_bob.send_text(json.dumps({"action": "register", "identity_pk": bob_pk_b64}))
 
                 # Alice connects to Bob by username
                 ws_alice.send_text(json.dumps({

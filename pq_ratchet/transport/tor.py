@@ -1,7 +1,6 @@
 """
 pq_ratchet.transport.tor
-RFC 1928 SOCKS5 Tor Transport Connector and Tor v3 Onion Service Manager.
-Enables metadata-private, NAT-traversing Post-Quantum ratcheted streams.
+RFC 1928 SOCKS5 Tor transport connector and Tor v3 onion service helper.
 """
 
 import asyncio
@@ -17,10 +16,8 @@ class TorSOCKS5Error(ConnectionError):
 
 class AsyncTorConnector:
     """
-    Asynchronous RFC 1928 SOCKS5 client proxy for onion-routed streams.
-    Guarantees:
-    1. Zero DNS leakage: domain names (.onion / clearnet) resolved remotely inside Tor (ATYP=0x03).
-    2. End-to-end transport isolation for post-quantum handshake packets.
+    Asynchronous RFC 1928 SOCKS5 client proxy for Tor-routed streams.
+    Sends destination domain names to the configured SOCKS5 proxy for resolution.
     """
     DEFAULT_TOR_SOCKS_PORT = 9050
     DEFAULT_TOR_BROWSER_SOCKS_PORT = 9150
@@ -132,7 +129,7 @@ class TorHiddenServiceHelper:
         target_host: str = "127.0.0.1",
     ) -> str:
         """
-        Generates production-grade torrc snippet for v3 hidden service hosting.
+        Generates a basic torrc snippet for a v3 hidden service.
         """
         abs_service_dir = os.path.abspath(service_dir)
         return (

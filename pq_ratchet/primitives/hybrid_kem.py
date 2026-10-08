@@ -46,7 +46,8 @@ class HybridKEMPublicKey:
     """
     Hybrid Public Key: (ML-KEM-768 PK, X25519 PK).
     Total Size: 1184 + 32 = 1216 bytes.
-    Security: IND-CCA2 under MLWE_{256, 3, 3329} and CDH over Curve25519.
+    Uses standardized ML-KEM-768 and X25519 components. Security of this custom
+    composition is not established by the repository.
     """
     def __init__(self, mlkem_pk: mlkem.MLKEM768PublicKey, x25519_pk: x25519.X25519PublicKey) -> None:
         self.mlkem_pk = mlkem_pk
@@ -75,7 +76,7 @@ class HybridKEMPublicKey:
         Dual encapsulation:
         1. Encapsulate against ML-KEM-768 PK -> (ss_kem, ct_kem).
         2. Sample ephemeral X25519 keypair, DH with X25519 PK -> ss_ec.
-        3. Combine via Dual-PRF: HKDF-SHA3-512(ss_kem || ss_ec).
+        3. Combine via HKDF-SHA3-512 over ss_kem || ss_ec.
         Returns (HybridKEMCiphertext, combined_shared_secret).
         Complexity: O(N log N) for NTT polynomial multiplication + O(1) group scalar mult.
         """
@@ -111,7 +112,8 @@ class HybridKEMPublicKey:
 class HybridKEMPrivateKey:
     """
     Hybrid Private Key: (ML-KEM-768 SK, X25519 SK).
-    Constant-time decapsulation guarantees absence of microarchitectural side-channels.
+    Side-channel behavior depends on the cryptography backend and has not been
+    independently evaluated for this application.
     """
     def __init__(
         self,
@@ -142,8 +144,9 @@ class HybridKEMPrivateKey:
         Dual decapsulation:
         1. Decapsulate ML-KEM-768 ciphertext -> ss_kem.
         2. Scalar multiply X25519 SK with ephemeral peer X25519 PK -> ss_ec.
-        3. Evaluate Dual-PRF combiner.
-        Security: IND-CCA2 preserved under quantum chosen-ciphertext adversary.
+        3. Apply the HKDF-SHA3-512 combiner.
+        This operation composes two standardized primitives; this method has no
+        accompanying proof for the custom hybrid construction.
         Complexity: O(N log N) + O(1).
         """
         ss_kem_buf = bytearray()

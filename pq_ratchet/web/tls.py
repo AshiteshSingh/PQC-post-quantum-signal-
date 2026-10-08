@@ -6,9 +6,9 @@ NOT zero-trace: key material is written to a temporary directory and must be cle
 
 QUANTUM SECURITY LIMITATION:
 This module generates Ed25519 certificates. Message confidentiality is independently
-protected by the application-layer PQC ratchet (ML-KEM-768 + ChaCha20-Poly1305), so
-breaking TLS does NOT expose message content. For a fully quantum-safe transport stack, deploy
-behind a PQ-TLS terminator or use the CLI tunnel (pq-ratchet tunnel) exclusively.
+intended to use the application's custom ratchet, but that protocol has not been
+independently reviewed. Do not assume that breaking TLS leaves message content safe.
+This certificate does not provide post-quantum TLS or make the application production-safe.
 """
 
 import os

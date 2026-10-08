@@ -1,6 +1,6 @@
 """
 pq_ratchet.cli
-Production CLI for Post-Quantum Secure Communications, Encrypted Pipes, Tunnels, and Chat.
+Experimental CLI for post-quantum ratchet demonstrations, pipes, tunnels, and chat.
 """
 
 import sys
@@ -13,6 +13,7 @@ import argparse
 import asyncio
 import base64
 import ipaddress
+import getpass
 from typing import Optional, Union, Tuple
 from cryptography.hazmat.primitives import serialization
 from pq_ratchet.primitives.identity import (
@@ -24,25 +25,43 @@ from pq_ratchet.transport.tunnel import PQTunnelServer, PQTunnelClient
 
 
 def save_keypair(prefix: str) -> None:
-    """Generates and writes ML-DSA-65 identity keypair."""
-    sk = IdentityPrivateKey.generate()
-    pk = sk.public_key()
-
+    """Generates an ML-DSA-65 identity keypair with a passphrase-protected private key."""
     priv_path = f"{prefix}.key"
     pub_path = f"{prefix}.pub"
+    if os.path.exists(priv_path) or os.path.exists(pub_path):
+        raise FileExistsError("Refusing to overwrite an existing key file")
+
+    while True:
+        passphrase = getpass.getpass("Private-key passphrase (12+ characters): ")
+        if len(passphrase) < 12:
+            print("Passphrase must contain at least 12 characters.", file=sys.stderr)
+            continue
+        confirmation = getpass.getpass("Confirm passphrase: ")
+        if passphrase != confirmation:
+            print("Passphrases do not match.", file=sys.stderr)
+            continue
+        password_bytes = passphrase.encode("utf-8")
+        break
+
+    sk = IdentityPrivateKey.generate()
+    pk = sk.public_key()
 
     sk_bytes = sk.raw_key.private_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption(),
+        encryption_algorithm=serialization.BestAvailableEncryption(password_bytes),
     )
     pk_bytes = pk.to_bytes()
     pk_b64 = base64.b64encode(pk_bytes).decode("ascii")
 
-    with open(priv_path, "wb") as f:
-        f.write(sk_bytes)
-    with open(pub_path, "w") as f:
-        f.write(f"-----BEGIN ML-DSA-65 PUBLIC KEY-----\n{pk_b64}\n-----END ML-DSA-65 PUBLIC KEY-----\n")
+    try:
+        private_fd = os.open(priv_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(private_fd, "wb") as f:
+            f.write(sk_bytes)
+        with open(pub_path, "x", encoding="ascii") as f:
+            f.write(f"-----BEGIN ML-DSA-65 PUBLIC KEY-----\n{pk_b64}\n-----END ML-DSA-65 PUBLIC KEY-----\n")
+    except FileExistsError as exc:
+        raise FileExistsError("Refusing to overwrite an existing key file") from exc
 
     print(f"[+] Generated Post-Quantum Identity Keypair:")
     print(f"    Private Key: {priv_path}")
@@ -52,7 +71,14 @@ def save_keypair(prefix: str) -> None:
 def load_private_key(path: str) -> IdentityPrivateKey:
     with open(path, "rb") as f:
         data = f.read()
-    raw_sk = serialization.load_pem_private_key(data, password=None)
+    password = None
+    if b"-----BEGIN ENCRYPTED PRIVATE KEY-----" in data:
+        password = getpass.getpass("Private-key passphrase: ").encode("utf-8")
+    elif b"-----BEGIN PRIVATE KEY-----" in data:
+        sys.stderr.write(
+            "[!] WARNING: this legacy private key is not passphrase-protected; rotate it or encrypt it before production use.\n"
+        )
+    raw_sk = serialization.load_pem_private_key(data, password=password)
     return IdentityPrivateKey(raw_sk)
 
 
@@ -167,7 +193,7 @@ async def run_pipe_send(
     peer_pk = load_public_key(peer_pub_path)
 
     onion_note = " via Tor network" if (via_tor or target_host.endswith(".onion")) else ""
-    sys.stderr.write(f"[*] Establishing Post-Quantum Ratchet channel to {target_host}:{target_port}{onion_note}...\n")
+    sys.stderr.write(f"[*] Establishing experimental ratchet channel to {target_host}:{target_port}{onion_note}...\n")
     session = await AsyncPQStreamSession.connect(
         host=target_host,
         port=target_port,
@@ -176,7 +202,7 @@ async def run_pipe_send(
         via_tor=via_tor,
         tor_proxy=tor_proxy,
     )
-    sys.stderr.write(f"[+] Quantum-safe E2EE channel established (ML-KEM-768 + X25519 hybrid).\n")
+    sys.stderr.write("[+] Experimental hybrid ratchet channel established.\n")
     sys.stderr.write(f"[*] Streaming stdin -> encrypted pipe...\n")
 
     loop = asyncio.get_event_loop()
@@ -192,7 +218,7 @@ async def run_pipe_send(
             await session.send_message(chunk)
     finally:
         await session.close()
-        sys.stderr.write(f"[+] Transmission complete. Cryptographic state securely zeroized.\n")
+        sys.stderr.write("[+] Transmission complete. Best-effort in-memory cleanup performed.\n")
 
 
 async def run_pipe_recv(listen_host: str, listen_port: int, key_path: str, peer_pub_path: str):
@@ -209,9 +235,9 @@ async def run_pipe_recv(listen_host: str, listen_port: int, key_path: str, peer_
             reader=reader,
             writer=writer,
             local_identity=sk,
-            expected_remote_identities=[peer_pk],
+            allowed_remote_identities=[peer_pk],
         )
-        sys.stderr.write(f"[+] Post-Quantum Handshake authenticated. Receiving encrypted stream...\n")
+        sys.stderr.write("[+] Experimental protocol peer identity verified. Receiving encrypted stream...\n")
         try:
             while True:
                 data = await server_session.recv_message()
@@ -226,10 +252,10 @@ async def run_pipe_recv(listen_host: str, listen_port: int, key_path: str, peer_
             stop_event.set()
 
     srv = await asyncio.start_server(handle_conn, listen_host, listen_port)
-    sys.stderr.write(f"[*] Post-Quantum Pipe listening on {listen_host}:{listen_port}...\n")
+    sys.stderr.write(f"[*] Experimental encrypted pipe listening on {listen_host}:{listen_port}...\n")
     async with srv:
         await stop_event.wait()
-    sys.stderr.write(f"[+] Pipe closed and memory zeroized.\n")
+    sys.stderr.write("[+] Pipe closed; best-effort session cleanup completed.\n")
 
 
 async def run_chat(
@@ -252,7 +278,7 @@ async def run_chat(
             nonlocal session
             print(f"[*] Incoming connection. Performing PQC Handshake (FIPS 203 + FIPS 204)...")
             session = await AsyncPQStreamSession.accept(reader, writer, sk, [peer_pk])
-            print(f"[+] Secure channel active! Every message ratchets forward. Type and hit Enter:\n")
+            print(f"[+] Experimental encrypted channel active. Do not use for production secrets. Type and hit Enter:\n")
             connected.set()
 
         srv = await asyncio.start_server(on_connect, host, port)
@@ -269,7 +295,7 @@ async def run_chat(
             via_tor=via_tor,
             tor_proxy=tor_proxy,
         )
-        print(f"[+] Secure channel active! Every message ratchets forward. Type and hit Enter:\n")
+        print(f"[+] Experimental encrypted channel active. Do not use for production secrets. Type and hit Enter:\n")
         connected.set()
 
     assert session is not None
@@ -319,7 +345,7 @@ async def run_p2p_node(listen_host: str, listen_port: int, key_path: str, bootst
     node = PQP2PNode(local_identity=sk, trusted_peers=trusted_pks, listen_host=listen_host, listen_port=listen_port)
     await node.start()
 
-    print(f"[+] Post-Quantum P2P Overlay Node initialized.")
+    print("[+] Experimental P2P overlay node initialized.")
     print(f"    PeerID:   {node.peer_id}")
     print(f"    Endpoint: {listen_host}:{listen_port}")
 
@@ -339,7 +365,7 @@ async def run_p2p_node(listen_host: str, listen_port: int, key_path: str, bootst
         connected = await node.bootstrap(boot_list)
         print(f"[+] Successfully connected to {connected} bootstrap peers.")
 
-    print(f"[*] Swarm active. Operating zero-trust blind relay mesh. Press Ctrl+C to terminate.\n")
+    print("[*] Experimental overlay active; peer IDs do not establish human identity. Press Ctrl+C to terminate.\n")
     try:
         while True:
             await asyncio.sleep(3600)
@@ -386,7 +412,7 @@ async def run_p2p_chat(
     node = PQP2PNode(local_identity=sk, trusted_peers=trusted_peers, listen_host="0.0.0.0", listen_port=listen_port)
     await node.start()
 
-    print(f"[+] Post-Quantum P2P Swarm Chat active.")
+    print("[+] Experimental P2P swarm chat active.")
     print(f"    Your PeerID:   {node.peer_id}")
     print(f"    Target PeerID: {target_peer_id}\n")
 
@@ -437,7 +463,7 @@ async def run_tor_status(proxy_addr: str):
         w.close()
         await w.wait_closed()
         print(f"[+] Local Tor SOCKS5 daemon is ONLINE and responding at {proxy_addr}")
-        print(f"[+] Ready to route post-quantum encrypted streams through the Tor network.")
+        print("[+] Ready to route experimental ratchet traffic through the Tor network.")
     except Exception as e:
         print(f"[-] Tor SOCKS5 daemon not detected at {proxy_addr} ({e})")
         print(f"    Ensure Tor or Tor Browser is running locally.")
@@ -466,7 +492,7 @@ def run_tor_onion_gen(service_dir: str, virtual_port: int, target_port: int):
 def main():
     parser = argparse.ArgumentParser(
         prog="pq-ratchet",
-        description="Post-Quantum Cryptographic Transport and KEM Double Ratchet Protocol CLI",
+        description="Experimental post-quantum ratchet prototype. Not for production secrets.",
     )
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
 
@@ -475,7 +501,7 @@ def main():
     p_keygen.add_argument("--out", default="identity", help="Output key prefix (default: identity)")
 
     # pipe
-    p_pipe = subparsers.add_parser("pipe", help="Stream raw stdin/stdout through quantum-safe E2EE ratchet")
+    p_pipe = subparsers.add_parser("pipe", help="Stream stdin/stdout through the experimental encrypted ratchet")
     p_pipe_sub = p_pipe.add_subparsers(dest="pipe_mode", required=True)
 
     p_pipe_send = p_pipe_sub.add_parser("send", help="Send stdin to remote receiver")
@@ -492,14 +518,14 @@ def main():
     p_pipe_recv.add_argument("--peer-pub", required=True, help="Sender public key path for identity pinning")
 
     # tunnel
-    p_tunnel = subparsers.add_parser("tunnel", help="TCP port-forwarding post-quantum tunnel")
+    p_tunnel = subparsers.add_parser("tunnel", help="Experimental ratcheted TCP port forwarding")
     p_tun_sub = p_tunnel.add_subparsers(dest="tunnel_mode", required=True)
 
     p_tun_srv = p_tun_sub.add_parser("server", help="Tunnel server (ingress gateway)")
     p_tun_srv.add_argument("--listen", default="0.0.0.0:9000", help="Listen address for client tunnels")
     p_tun_srv.add_argument("--target", required=True, help="Target destination host:port to forward to (e.g. 127.0.0.1:22)")
     p_tun_srv.add_argument("--key", required=True, help="Server identity private key")
-    p_tun_srv.add_argument("--peer-pub", help="Optional allowed client public key")
+    p_tun_srv.add_argument("--peer-pub", required=True, help="Pinned allowed client public key")
 
     p_tun_cli = p_tun_sub.add_parser("client", help="Tunnel client (egress proxy)")
     p_tun_cli.add_argument("--listen", default="127.0.0.1:2222", help="Local port for incoming application traffic")
@@ -517,7 +543,7 @@ def main():
     p_chat.add_argument("--tor-proxy", default=None, help="Tor SOCKS5 proxy host:port (e.g. 127.0.0.1:9050)")
 
     # p2p (decentralized mesh)
-    p_p2p = subparsers.add_parser("p2p", help="Decentralized Peer-to-Peer post-quantum overlay network")
+    p_p2p = subparsers.add_parser("p2p", help="Experimental peer-to-peer ratchet overlay")
     p_p2p_sub = p_p2p.add_subparsers(dest="p2p_mode", required=True)
 
     p_p2p_node = p_p2p_sub.add_parser("node", help="Run standalone P2P overlay mesh node")
@@ -550,7 +576,7 @@ def main():
     subparsers.add_parser("benchmark", help="Run comprehensive cryptographic benchmark")
 
     # web
-    p_web = subparsers.add_parser("web", help="Launch interactive Post-Quantum Web Chat GUI")
+    p_web = subparsers.add_parser("web", help="Launch the experimental web chat prototype")
     p_web.add_argument("--host", default="127.0.0.1", help="Binding host (default: 127.0.0.1 loopback for local-only security)")
     p_web.add_argument("--port", type=int, default=8000, help="Port to listen on (default: 8000)")
     p_web.add_argument("--ssl-keyfile", default=None, help="SSL private key file path for HTTPS / WSS")
@@ -583,9 +609,9 @@ def main():
             lhost, lport = parse_host_port(args.listen)
             thost, tport = parse_host_port(args.target)
             sk = load_private_key(args.key)
-            peer_pk = load_public_key(args.peer_pub) if args.peer_pub else None
+            peer_pk = load_public_key(args.peer_pub)
             server = PQTunnelServer(lhost, lport, thost, tport, sk, peer_pk)
-            print(f"[+] Post-Quantum Tunnel Server active on {args.listen} -> forwarding to {args.target}")
+            print(f"[+] Experimental tunnel server active on {args.listen} -> forwarding to {args.target}")
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(server.start())
@@ -599,7 +625,7 @@ def main():
             sk = load_private_key(args.key)
             peer_pk = load_public_key(args.peer_pub)
             client = PQTunnelClient(lhost, lport, shost, sport, sk, peer_pk)
-            print(f"[+] Post-Quantum Tunnel Client listening on {args.listen} -> routing to {args.server}")
+            print(f"[+] Experimental tunnel client listening on {args.listen} -> routing to {args.server}")
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(client.start())
@@ -635,7 +661,7 @@ def main():
 
     elif args.subcommand == "web":
         import uvicorn
-        from pq_ratchet.web.app import app
+        from pq_ratchet.web.app import app, MAX_PAYLOAD_BYTES
 
         ssl_keyfile = args.ssl_keyfile
         ssl_certfile = args.ssl_certfile
@@ -650,7 +676,7 @@ def main():
                 f"\n[!] CRITICAL SECURITY ENFORCEMENT: Non-loopback network binding (--host '{args.host}') "
                 f"strictly requires TLS encryption to prevent network eavesdropping of administrative credentials "
                 f"and WebSocket session tokens.\n"
-                f"    -> Pass --tls and --tls-host <ip/domain> to automatically generate an ephemeral zero-trace TLS certificate for that address,\n"
+                f"    -> Pass --tls and --tls-host <ip/domain> to generate a temporary self-signed development certificate for that address,\n"
                 f"    -> Provide --ssl-certfile and --ssl-keyfile for trusted CA certificates, or\n"
                 f"    -> Pass --allow-insecure-http only if terminating TLS at a trusted reverse proxy (e.g. Nginx, Cloudflare).\n"
             )
@@ -692,8 +718,8 @@ def main():
 
         proto = "https" if ssl_certfile else "http"
         host_display = "127.0.0.1" if is_loopback else args.host
-        print(f"\n[+] Launching Post-Quantum Secure Web Chat at {proto}://{host_display}:{args.port}")
-        print(f"[+] Zero IP retention, zero disk storage, 1-hour ephemeral registry.")
+        print(f"\n[+] Launching experimental web chat at {proto}://{host_display}:{args.port}")
+        print("[+] In-memory peer registry; sessions expire after one hour.")
         if sys.stdout.isatty():
             if not args.pairing_token:
                 print(f"[+] Autogenerated Pairing Token (opaque origins): {ptoken}")
@@ -712,6 +738,8 @@ def main():
                 port=args.port,
                 ssl_keyfile=ssl_keyfile,
                 ssl_certfile=ssl_certfile,
+                ws_max_size=MAX_PAYLOAD_BYTES,
+                ws_max_queue=16,
                 access_log=False,
                 log_level="warning",
             )
@@ -719,7 +747,7 @@ def main():
             if ephemeral_tls_dir:
                 from pq_ratchet.web.tls import cleanup_ephemeral_tls
                 cleanup_ephemeral_tls(ephemeral_tls_dir)
-                sys.stderr.write(f"[+] Ephemeral TLS key material securely wiped from {ephemeral_tls_dir}\n")
+                sys.stderr.write(f"[+] Best-effort cleanup attempted for ephemeral TLS files in {ephemeral_tls_dir}\n")
 
 
 if __name__ == "__main__":

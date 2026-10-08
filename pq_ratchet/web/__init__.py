@@ -1,6 +1,6 @@
 """
 pq_ratchet.web
-Web interface and WebSocket server for post-quantum secure messaging.
+Experimental web interface and WebSocket relay for the custom ratchet prototype.
 """
 
 from pq_ratchet.web.app import app

@@ -1,11 +1,11 @@
-# pq-ratchet: Post-Quantum Cryptographic Transport & KEM Double Ratchet Protocol
+# pq-ratchet: Experimental Post-Quantum Ratchet Prototype
 
-[![Security: Post-Quantum FIPS 203/204](https://img.shields.io/badge/Security-NIST_FIPS_203%2F204-blue.svg)](#)
+[![Algorithms: NIST FIPS 203/204](https://img.shields.io/badge/Algorithms-NIST_FIPS_203%2F204-blue.svg)](#)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-green.svg)](LICENSE)
 [![Symbolic Security Model: ProVerif](https://img.shields.io/badge/Symbolic_Model-ProVerif_2.0-purple.svg)](formal_verification/pq_ratchet.pv)
-[![Quantum Security Margin: 192-bit](https://img.shields.io/badge/Security_Margin-192--bit_FTQC-red.svg)](#)
+[![ML-KEM Parameter Category: NIST Category 3](https://img.shields.io/badge/ML--KEM_Category-NIST_3-red.svg)](#)
 
-A research-grade, zero-failure post-quantum end-to-end encrypted (E2EE) messaging protocol and network transport layer. Designed for cybersecurity teams, privacy engineers, and high-assurance distributed systems migrating beyond classical Diffie-Hellman and elliptic curves to neutralize **Harvest-Now-Decrypt-Later (HNDL)** adversaries.
+**Security status: experimental and unaudited. Do not use this project to protect production secrets.** It contains implementations of standardized cryptographic primitives, but the handshake, ratchet, browser client, and transport composition are custom and have not received an independent cryptographic review or a security proof. Algorithm names and symbolic modeling do not establish system-level security.
 
 ---
 
@@ -20,11 +20,11 @@ The classical **Double Ratchet Algorithm** (pioneered by Signal and used across 
 - Classical DH is **bidirectional and non-interactive**: both parties compute the shared secret $g^{ab}$ from their static/ephemeral shares.
 - Modern lattice-based post-quantum standards (**FIPS 203 / ML-KEM**) are **unidirectional Key Encapsulation Mechanisms (KEMs)**: one party must encapsulate against a public key, generating an explicit ciphertext that the peer must decapsulate.
 
-**`pq-ratchet`** solves this structural asymmetry by implementing an **alternating KEM Double Ratchet engine** backed by a **Dual-PRF Combiner** (FIPS 203 ML-KEM-768 + RFC 7748 X25519) and long-term **FIPS 204 ML-DSA-65 identity signatures**, delivering $\text{IND-CCA2}$ confidentiality, continuous forward secrecy, and self-healing PCS under concrete lattice and group-theoretic hardness assumptions.
+**`pq-ratchet`** is an experimental attempt at an alternating KEM ratchet using ML-KEM-768, X25519, ML-DSA-65, HKDF-SHA3-512, and ChaCha20-Poly1305. This repository does not establish an IND-CCA2 proof for the composed protocol, continuous forward secrecy, or post-compromise security.
 
 ---
 
-## 2. Mathematical Foundations & Security Reductions
+## 2. Primitive Standards and Protocol Assumptions
 
 ```
 +-----------------------------------------------------------------------------------------------+
@@ -40,14 +40,17 @@ The classical **Double Ratchet Algorithm** (pioneered by Signal and used across 
 +-------------------------------------------------------+---------------------------------------+
 ```
 
-### The Dual-PRF Combiner Theorem
-To protect against mathematical cryptanalysis targeting newly standardized lattice problems, ephemeral shared secrets are combined via a split-PRF combiner:
+### Hybrid KEM Combiner Design & Cryptographic Assumptions
+The code combines ephemeral shared secrets from the two components with HKDF. This is intended as a hybrid design, but this repository does not prove its security against component compromise or quantum adversaries:
 
-$$K_{\text{combined}} = \mathrm{HKDF\text{-}Extract}\Big(\text{Salt} = K_{\text{ratchet}}, \,\, \text{IKM} = \mathrm{SS}_{\text{ML-KEM}} \,\|\, \mathrm{SS}_{\text{X25519}} \,\|\, \mathrm{Context}\Big)$$
+$$K_{\text{combined}} = \mathrm{HKDF\text{-}SHA3\text{-}512}\Big(\text{IKM} = \mathrm{SS}_{\text{ML-KEM}} \,\|\, \mathrm{SS}_{\text{X25519}}, \,\, \text{Salt} = \text{salt}, \,\, \text{Info} = \mathrm{Context}\Big)$$
 
-$$\text{Security}(K_{\text{combined}}) \ge \max\Big(\mathrm{Sec}(\text{ML-KEM-768}), \,\, \mathrm{Sec}(\text{X25519})\Big)$$
-
-Even if an adversary possesses an FTQC that shatters discrete logarithms over Curve25519, the session key remains $\text{IND-CCA2}$ secure under the lattice shortest vector assumption ($\mathrm{SVP}_\beta$). Conversely, if a future structural attack degrades Module-LWE, classical CDH guarantees 128-bit classical hardness.
+#### Combiner Scope
+- The code concatenates two 32-byte shared secrets and passes them to HKDF-SHA3-512 with a domain-separation string. This is a hybrid design choice, not a proof in this repository. The cited hybrid-combiner literature and RFC 9180 do not by themselves prove this exact protocol composition or state machine.
+- **Underlying Hardness Problems**:
+  - **Post-Quantum Security**: Hardness of $\mathrm{Module\text{-}LWE}_{256,3,3329}$ (FIPS 203 ML-KEM-768, targeted to NIST Security Category 3).
+  - **Classical Security**: Hardness of Computational Diffie-Hellman ($\mathrm{CDH}$) over Curve25519 (128-bit classical security).
+- **Protocol scope**: NIST Category 3 is a parameter-set security-strength classification for ML-KEM-768, not a measured security guarantee for this application or a proof of its hybrid combiner.
 
 ---
 
@@ -94,7 +97,7 @@ All header metadata (Epoch, Sequence, Flags, Routing parameters) is injected as 
 
 ## 4. Benchmark Profile
 
-Benchmarked on `x86_64` (Python 3.11.9, Rust/OpenSSL cryptography backend):
+The repository includes a microbenchmark command (`pq-ratchet benchmark`). The figures below are a historical sample from the original documentation; the exact CPU, dependency build, and measurement conditions are not recorded here, so treat them as illustrative. They measure runtime only and say nothing about protocol security.
 
 ```
 ======================================================================
@@ -103,8 +106,8 @@ Benchmarked on `x86_64` (Python 3.11.9, Rust/OpenSSL cryptography backend):
 | Operation                                  | Mean Latency |   Throughput |
 ----------------------------------------------------------------------
 | Hybrid KEM Keygen (ML-KEM-768 + X25519)    |    287.57 us |     3477.4 ops/s |
-| Hybrid KEM Encapsulate (Dual-PRF)          |    232.25 us |     4305.6 ops/s |
-| Hybrid KEM Decapsulate (Dual-PRF)          |    204.35 us |     4893.5 ops/s |
+| Hybrid KEM Encapsulate (HKDF combiner)      |    232.25 us |     4305.6 ops/s |
+| Hybrid KEM Decapsulate (HKDF combiner)      |    204.35 us |     4893.5 ops/s |
 | ML-DSA-65 Keygen (FIPS 204 Level 3)        |    282.15 us |     3544.2 ops/s |
 | ML-DSA-65 Sign (64-byte payload)           |   1157.15 us |      864.2 ops/s |
 | ML-DSA-65 Verify (64-byte payload)         |    219.30 us |     4559.9 ops/s |
@@ -122,16 +125,27 @@ Benchmarked on `x86_64` (Python 3.11.9, Rust/OpenSSL cryptography backend):
 | **Prekey Signature** | 64 B (`Ed25519`) | **3,309 B** (`ML-DSA-65`) |
 | **Ratchet KEM Step Overhead** | 32 B (`ECDH PK`) | **1,120 B** (`Hybrid CT`) |
 | **Symmetric Frame Overhead** | 16 B (`Poly1305`) | **31 B** (Framed Header + AD) |
-| **Quantum Security Margin** | **0 bits** (Broken by Shor) | **192 bits** (FTQC Resilient) |
+| **Algorithm Category** | Not post-quantum secure | **NIST Category 3 algorithms** (ML-KEM-768 / ML-DSA-65) |
+
+These size comparisons are primitive and framing sizes, not a protocol-level security estimate.
 
 ---
 
-## 5. Formal Verification
+## 5. Symbolic Formal Modeling & Limitations
 
-The protocol has been formally modeled in **ProVerif 2.0+** (`formal_verification/pq_ratchet.pv`). The symbolic verification model proves:
-1. **Strong Secrecy:** Query `attacker(secret_payload)` is mathematically unreachable under an active quantum Dolev-Yao adversary controlling all communications.
-2. **Injective Mutual Agreement:** Query `inj-event(alice_finished(a, b, k)) ==> inj-event(bob_accepted(a, b, k))` holds unconditionally, ruling out replay, impersonation, and Man-in-the-Middle attacks.
-3. **Forward Secrecy:** Exposure of long-term identity keys $sk_{\text{ID}}$ does not expose historical message sessions.
+A symbolic model is provided in **ProVerif 2.0+** ([`formal_verification/pq_ratchet.pv`](formal_verification/pq_ratchet.pv)).
+
+### Modelled Queries (not a recorded verification result)
+The source contains queries for the 1.5-RTT handshake and first message turn under a symbolic Dolev-Yao adversary using idealized algebraic abstractions:
+1. **Payload secrecy:** `attacker(secret_payload)` under uncompromised identity and ephemeral session keys.
+2. **Mutual injective agreement:** `inj-event(alice_finished(a, b, k)) ==> inj-event(bob_accepted(a, b, k))`.
+
+No ProVerif output or independently reproduced result is included in this repository. These queries must not be read as proof that the executable implementation satisfies the properties.
+
+### Explicit Model Assumptions & Divergences
+- **Idealized Primitives:** The model uses symbolic constructors and reduction rules for KEM and signatures (`reduc kem_decap(sk, kem_encap_ct(kem_pk_gen(sk), r)) = ...`). It does not model lattice noise distributions, decryption failures ($\delta$), or concrete bit security.
+- **Handshake-Only Scope:** The ProVerif model verifies the initial 1.5-RTT key exchange and the first data frame; it does **not** model the full continuous multi-epoch ratchet state machine, out-of-order skipped key caches, or asynchronous turn transitions.
+- **No active forward-secrecy query:** The model does not include an explicit post-session identity leakage query (`out(c, skA)`). The Python tests are examples, not a proof of forward secrecy.
 
 ---
 
@@ -139,7 +153,7 @@ The protocol has been formally modeled in **ProVerif 2.0+** (`formal_verificatio
 
 ### Prerequisites
 - Python $\ge$ 3.10
-- `cryptography >= 43.0.0` (with native FIPS 203/204 support)
+- `cryptography >= 47.0.0` (the minimum version required by the imported ML-KEM/ML-DSA APIs)
 
 ```bash
 # Clone the repository
@@ -154,10 +168,10 @@ pip install -e .
 
 ## 7. Command Line Tool (`pq-ratchet`)
 
-The CLI offers instant drop-in utilities for cybersecurity operators.
+The CLI provides experimental examples for developer evaluation. Do not use it to protect production secrets.
 
 ### 1. Key Generation
-Generate post-quantum ML-DSA-65 identity keypairs:
+Generate an ML-DSA-65 identity keypair. The CLI prompts for a passphrase and writes the private key as encrypted PKCS#8; it refuses to overwrite existing key files:
 ```bash
 $ pq-ratchet keygen --out server
 [+] Generated Post-Quantum Identity Keypair:
@@ -167,22 +181,22 @@ $ pq-ratchet keygen --out server
 $ pq-ratchet keygen --out client
 ```
 
-### 2. Quantum-Safe TCP Port-Forwarding Tunnel (VPN / Bastion)
-Forward any existing TCP connection (SSH, RDP, MySQL, HTTP) across a quantum-safe encrypted ratchet channel:
+### 2. Experimental TCP Port-Forwarding Tunnel
+The following is a development example for the unaudited custom protocol. Do not use it to protect production traffic:
 
 ```bash
-# Server Gateway (Forward incoming quantum tunnel on port 9000 to local SSH port 22)
-$ pq-ratchet tunnel server --listen 0.0.0.0:9000 --target 127.0.0.1:22 --key server.key
+# Server Gateway (forward incoming experimental tunnel traffic to local SSH)
+$ pq-ratchet tunnel server --listen 0.0.0.0:9000 --target 127.0.0.1:22 --key server.key --peer-pub client.pub
 
-# Client Proxy (Listen on local port 2222 and forward across quantum tunnel to remote server)
+# Client Proxy (forward local traffic through the experimental tunnel)
 $ pq-ratchet tunnel client --listen 127.0.0.1:2222 --server 192.168.1.50:9000 --key client.key --peer-pub server.pub
 
-# Now SSH normally through the quantum-hardened ratchet!
+# Development example only; the protocol is not production-ready.
 $ ssh -p 2222 user@127.0.0.1
 ```
 
-### 3. Encrypted Unix Pipe (Drop-in Post-Quantum Netcat)
-Pipe sensitive database backups, forensic images, or secrets over an authenticated post-quantum ratchet:
+### 3. Experimental Encrypted Unix Pipe
+Development example only; do not pipe production secrets through this unaudited protocol:
 
 ```bash
 # Receiver (Listens on port 9000, outputs plaintext to disk)
@@ -192,8 +206,8 @@ $ pq-ratchet pipe recv --listen 0.0.0.0:9000 --key server.key --peer-pub client.
 $ cat confidential_dump.sql.gz | pq-ratchet pipe send --to 192.168.1.50:9000 --key client.key --peer-pub server.pub
 ```
 
-### 4. Interactive E2EE Terminal Chat
-Peer-to-peer secure terminal chat where every keystroke and turn ratchets forward:
+### 4. Experimental Terminal Chat
+Peer-to-peer chat example using the custom ratchet:
 
 ```bash
 # Node A (Listen)
@@ -206,19 +220,19 @@ $ pq-ratchet chat connect --addr 192.168.1.50:9000 --key bob.key --peer-pub alic
 $ pq-ratchet chat connect --addr expyuzz...onion:9000 --key bob.key --peer-pub alice.pub --via-tor
 ```
 
-### 5. Decentralized Peer-to-Peer (P2P) Overlay Mesh
-Eliminates central relay servers completely. Nodes form an autonomous mesh with self-authenticating PeerIDs (`pqc_<32-hex>`), dynamic Peer Exchange (PEX), and multi-hop blind relaying:
+### 5. Experimental Peer-to-Peer (P2P) Overlay
+The prototype can route encrypted frames through bootstrap peers using key-derived peer identifiers (`pqc_<32-hex>`), peer exchange, and multi-hop forwarding. A peer identifier does not verify a person's identity; pin identity keys out of band:
 
 ```bash
 # Start a decentralized P2P routing node
 $ pq-ratchet p2p node --key node.key --peer-pub peer1.pub --listen 0.0.0.0:9100 --bootstrap 192.168.1.10:9100:peer1.pub
 
-# Chat directly with any peer in the swarm using their self-authenticating PeerID
+# Chat with a peer using its key-derived PeerID (pin its identity key out of band)
 $ pq-ratchet p2p chat --key client.key --peer-pub peer1.pub --target-peer pqc_9a4f82b7... --bootstrap 192.168.1.10:9100:peer1.pub
 ```
 
-### 6. Tor v3 Onion Service Hosting (100% Free Decentralized Web / Transport)
-Host the post-quantum web messenger or transport services over Tor darknet without ICANN domain registration or public IP exposure:
+### 6. Tor v3 Onion Service Helper
+Generate a basic Tor v3 onion service configuration for local experimentation:
 
 ```bash
 # Check if local Tor SOCKS5 daemon is available
@@ -235,9 +249,9 @@ $ pq-ratchet benchmark
 
 ---
 
-## 8. Python SDK Integration
+## 8. Experimental Python API Example
 
-To integrate post-quantum ratcheting into microservices or custom chat protocols:
+This example demonstrates the API only. The custom protocol is unaudited and is not suitable for production secrets:
 
 ```python
 from pq_ratchet.primitives.identity import IdentityPrivateKey
@@ -264,35 +278,39 @@ bob_session, resp_packet = PQRatchetSession.respond_handshake(
 alice_session.complete_handshake(resp_packet)
 
 # 5. Encrypt & Ratchet Forward
-ciphertext = alice_session.ratchet_encrypt(b"Top secret quantum-immune data")
+ciphertext = alice_session.ratchet_encrypt(b"Example data")
 plaintext = bob_session.ratchet_decrypt(ciphertext)
-assert plaintext == b"Top secret quantum-immune data"
+assert plaintext == b"Example data"
 
-# 6. Secure Destruction
+# 6. Best-Effort Local Cleanup
 alice_session.close()
 bob_session.close()
 ```
 
 ---
 
-## 9. Security, Threat Modeling & Hardening Invariants
+## 9. Security Notes and Known Limits
 
-- **Constant-Time Execution:** Modular polynomial arithmetic and elliptic curve group scalar multiplications are delegated to constant-time OpenSSL/Rust microarchitectural kernels to neutralize timing side-channels.
-- **Full Handshake Transcript Binding:** Initiator and responder signatures under ML-DSA-65 authenticate the complete protocol transcript: protocol version, role identifiers, local/remote long-term identity public keys, ephemeral Hybrid KEM keys, and encapsulation ciphertexts. This prevents Unknown Key Share (UKS) and cross-session reflection attacks.
-- **DoS Sequence Gap Rejection:** Out-of-order packet sequence numbers are bounded by `MAX_RATCHET_SKIP_GAP = 1000`. Inbound frames exceeding this sequence gap are rejected in $\mathcal{O}(1)$ prior to performing any symmetric KDF steps or buffer allocations, eliminating CPU/memory exhaustion amplification.
+FIPS 203 and FIPS 204 name the algorithm standards used by this project. This repository does not claim a FIPS 140 validated cryptographic module, nor does conformance of a primitive establish the security of the application protocol.
+
+- **Constant-time behavior:** This repository has not established constant-time behavior for all native or browser paths. Backend and runtime behavior must be assessed for the deployment environment.
+- **Handshake transcript signatures:** The Python handshake signatures cover version, roles, identity keys, and the relevant ephemeral values. This local property does not constitute a proof of the full protocol.
+- **Sequence-gap bound:** The native Python ratchet checks the sequence gap before KEM decapsulation. This bounds one source of work but does not prevent denial-of-service from repeated connections, valid-size KEM inputs, or the separate browser implementation.
 - **Best-Effort Memory Zeroization (Runtime-Bounded):** Ephemeral root keys, symmetric chain keys, and skipped message keys maintained in mutable `bytearray` buffers are explicitly overwritten in-place with zeros (`zeroize()`) upon ratcheting, eviction, or session destruction. Session destruction (`zeroize_all()`) explicitly unbinds and dereferences all ephemeral and identity key objects. However, because CPython manages immutable `bytes` objects (such as intermediate HMAC message keys), garbage collection cycles, and opaque OpenSSL/Rust key structures outside direct Python memory control, absolute physical RAM zeroization cannot be guaranteed at the interpreter layer. Similarly, on-disk TLS key cleanup performs in-place random overwriting before deletion, but SSD Flash Translation Layers (FTL wear-leveling) and copy-on-write filesystems prevent guaranteeing physical NAND cell erasure from userland.
-- **Classical TLS Boundaries & Ephemeral Certificate Qualification:** The `--tls` CLI flag generates an ephemeral, self-signed Ed25519 TLS certificate for development and local testing. This certificate is classical (not Post-Quantum TLS) and untrusted by browsers without manual security exceptions. End-to-end payload confidentiality is independently guaranteed by the application-layer PQC ratchet (ML-KEM-768 + ChaCha20-Poly1305), but production transport authenticity requires trusted CA certificates (`--ssl-certfile`/`--ssl-keyfile`), while quantum-safe transport requires deploying behind a PQ-TLS terminator or using native PQC CLI tunnels.
-- **Out-of-Band Identity Verification (Zero-Trust Relay Model):** The blind WebSocket relay accepts client-supplied usernames and ML-DSA-65 identity keys without centralized authentication or account registration, maintaining zero server-side trust and zero IP retention. Consequently, first-contact identity substitution (TOFU risk) and handle squatting are inherent to the blind transit topology. The web client enforces an out-of-band verification model: outgoing message dispatch is blocked until the peer's cryptographic Safety Number (fingerprint) is compared and pinned out-of-band.
+- **TLS boundaries:** The `--tls` flag generates a self-signed Ed25519 certificate for development. It is classical and does not authenticate a public server by default. This does not make the custom application-layer protocol production-safe.
+- **Web identity and relay limits:** The relay accepts client-supplied usernames and identity keys. First-contact identity substitution and handle squatting are risks in this design; do not treat a self-asserted key as a verified identity. The browser implementation's identity and pairing flow needs independent review.
+- **Web relay enforcement:** The server validates a registered ML-DSA public key, prevents changing it during a connection, requires both users to register before pairing, and forwards packets only to the currently paired peer. It does not provide user accounts, peer consent, or human identity verification.
+- **Web origin policy:** The browser UI should be served by the relay itself. Cross-origin HTTP reads and non-same-origin WebSocket connections are disabled unless `PQC_WEB_ALLOWED_ORIGINS` is set to comma-separated, exact `http://` or `https://` origins. Configure it for a separate UI origin or a TLS-terminating reverse proxy; wildcard and opaque `null` origins are not accepted for HTTP reads. A `file://` page can use the pairing-token WebSocket path, but cannot read the online directory under the default policy.
 - **Bounded Skipped Keys Cache:** Out-of-order message buffering enforces an LRU eviction policy capped at 1,000 keys to prevent memory exhaustion DoS.
-- **Anti-Replay Protection:** Nonces are derived deterministically from $(epoch, seq)$ tuples bound into ChaCha20-Poly1305 Associated Data. Replayed frames trigger immediate AEAD authentication failures.
-- **Browser Threat Model & Adversarial Web Host:** The WebSocket relay is cryptographically blind to transit payloads (IND-CCA2 / EUF-CMA). However, in dynamic web delivery, the web host serving the JavaScript controls code execution. An adversarial or compromised host could serve trojanized JavaScript that intercepts unlocked keys or passphrases. To eliminate host trust:
-  1. **Native Client Isolation:** Use the native CLI (`pq-ratchet chat` / `pq-ratchet p2p`), which runs entirely in local Python/Rust/C memory and never downloads code from the network.
-  2. **Decoupled Standalone Client & Subresource Integrity (SRI):** The web client can be executed offline locally (via `file://` or local static server) and pointed to any untrusted remote relay using the Relay Server URL parameter (`?relay=wss://<relay-host>`). All scripts (`pq-crypto.bundle.js`, `app.js`) and stylesheets (`style.css`) loaded by `index.html` enforce cryptographic Subresource Integrity (`integrity="sha384-..."` with `crossorigin="anonymous"`). To neutralize Cross-Site WebSocket Hijacking (CSWSH) and handle-squatting by arbitrary third-party websites embedding sandboxed iframes (`Origin: null`), opaque origins mandate an out-of-band cryptographically secure pairing token (`?token=<token>` or `x-pairing-token`), which is displayed by the relay server upon launch. Retrieving or rotating pairing tokens via the `/api/pairing-token` API endpoint strictly mandates an admin authorization credential (`Authorization: Bearer <admin_token>`) in HTTP headers (query-string credentials are systematically rejected); requests omitting authorization are rejected with HTTP 401 Unauthorized regardless of browser headers. Furthermore, the web server binds to loopback (`127.0.0.1`) by default for local-only safety, and strictly mandates TLS on non-loopback network interfaces (requiring matching `--tls-host` when using wildcard binds with `--tls`, or trusted production certificates via `--ssl-certfile`/`--ssl-keyfile`) to prevent plaintext interception of credentials and session tokens over the network. Ephemeral TLS private keys generated via `--tls` are overwritten in-place with random entropy before unlinking upon gateway shutdown.
-  3. **Cryptographic Manifest & PQC Signature Verification:** All mandatory web client assets (`index.html`, `style.css`, `pq-crypto.bundle.js`, `app.js`) are pinned in `manifest.json`. The verification harness (`verify_bundle.py`) authenticates the distribution manifest against a separately trusted root SHA-256 digest and an unforgeable post-quantum FIPS 204 ML-DSA-65 digital signature (`manifest.sig` verified against the pinned embedded release key or an explicitly supplied `--trusted-pk`), strictly rejecting omitted assets, empty asset sets, unauthenticated manifests, or untrusted directory keys:
+- **Replay handling:** Nonces are derived from `(epoch, seq)` and bound into associated data. Replay and state-transition behavior still require full protocol review, especially across out-of-order and concurrent traffic.
+- **Browser threat model:** A web host that controls delivered JavaScript can access unlocked keys and passphrases. The browser implementation and release pipeline have not received an independent security review. SRI checks that fetched files match listed hashes; a signed manifest can authenticate listed bytes when its signing key is trusted. Neither establishes that the code or protocol is safe. The current browser assets still contain stronger security labels; those labels are not evidence of assurance. Updating the signed assets requires an authorized release signature.
+  1. **Native client:** A local CLI avoids loading browser code from a web host, but it still uses the same unaudited custom protocol and is not thereby production-safe.
+  2. **Web server transport:** The server binds to loopback by default. Non-loopback use requires TLS unless `--allow-insecure-http` is explicitly selected. The generated development certificate is self-signed Ed25519 TLS, not post-quantum TLS.
+  3. **Asset verification:** The `verify_bundle.py` utility checks the static bundle against its manifest and configured trust anchor. This is a distribution-integrity check, not a protocol-security proof:
      ```bash
      $ python -m pq_ratchet.web.verify_bundle --require-sig
      ```
-- **Formal Verification Scope:** The ProVerif model (`formal_verification/pq_ratchet.pv`) evaluates the symbolic core of the alternating KEM handshake and ratchet turn under a Dolev-Yao quantum adversary with standard cryptographic abstractions (perfect hashing, ideal KEM, unforgeable signatures), modeling confidentiality and injective agreement rather than serving as an end-to-end computational proof of the Python codebase.
+- **Formal Verification Scope:** The ProVerif model (`formal_verification/pq_ratchet.pv`) is a symbolic Dolev-Yao model using idealized cryptographic abstractions. It does not model quantum algorithms or provide an end-to-end computational proof of the Python codebase.
 
 ---
 

@@ -1,6 +1,6 @@
 """
 pq_ratchet.transport.tunnel
-Quantum-Safe Port Forwarding & Transport Tunnel Daemon.
+Experimental ratcheted port forwarding and transport tunnel.
 """
 
 import asyncio
@@ -16,8 +16,8 @@ CHUNK_BUFFER_SIZE = 64 * 1024  # 64 KiB proxy chunk size
 
 class PQTunnelServer:
     """
-    Quantum-Safe Ingress Gateway.
-    Accepts PQC-encrypted connections on tunnel port and forwards decrypted stream to target.
+    Experimental ingress gateway for the custom ratcheted protocol.
+    Accepts encrypted connections on the tunnel port and forwards the decrypted stream to target.
     """
     def __init__(
         self,
@@ -26,13 +26,15 @@ class PQTunnelServer:
         target_host: str,
         target_port: int,
         identity_key: IdentityPrivateKey,
-        allowed_peer_pk: Optional[IdentityPublicKey] = None,
+        allowed_peer_pk: IdentityPublicKey,
     ) -> None:
         self.listen_host = listen_host
         self.listen_port = listen_port
         self.target_host = target_host
         self.target_port = target_port
         self.identity_key = identity_key
+        if allowed_peer_pk is None:
+            raise ValueError("Tunnel server requires a pinned client identity")
         self.allowed_peer_pk = allowed_peer_pk
         self._server: Optional[asyncio.Server] = None
 
@@ -112,7 +114,7 @@ class PQTunnelServer:
 
 class PQTunnelClient:
     """
-    Quantum-Safe Egress Client.
+    Experimental egress client for the custom ratcheted protocol.
     Listens on local loopback port and forwards connections through PQC ratchet tunnel.
     """
     def __init__(

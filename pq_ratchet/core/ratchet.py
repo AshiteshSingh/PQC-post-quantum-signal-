@@ -13,7 +13,7 @@ from pq_ratchet.constants import (
     DOMAIN_AUTH_TRANSCRIPT,
     DOMAIN_AUTH_INITIATOR,
     DOMAIN_AUTH_RESPONDER,
-    MAX_SKIPPED_KEYS_CACHE,
+    MAX_RATCHET_SKIP_GAP,
     MAX_PACKET_PAYLOAD_BYTES,
 )
 from pq_ratchet.primitives.identity import (
@@ -84,11 +84,9 @@ def compute_responder_transcript(
 
 class PQRatchetSession:
     """
-    Stateful Post-Quantum E2EE Session.
-    Guarantees:
-    1. IND-CCA2 confidentiality against active quantum adversary.
-    2. Quantum Forward Secrecy via destructive symmetric chain advancement and KEM SK erasure.
-    3. Quantum Post-Compromise Security via continuous alternating KEM encapsulations.
+    Experimental stateful session built from post-quantum cryptographic primitives.
+    The repository does not prove the security of this custom protocol or its
+    forward-secrecy and post-compromise-security properties.
     """
     def __init__(self, state: SessionState) -> None:
         self.state = state
@@ -103,7 +101,8 @@ class PQRatchetSession:
     ) -> Tuple["PQRatchetSession", bytes]:
         """
         Initiates outbound session (Alice -> Bob).
-        Binds full handshake transcript under ML-DSA-65 to guarantee EUF-CMA and prevent MitM / UKS.
+        Signs a domain-separated handshake transcript with ML-DSA-65. This local
+        transcript binding is not a proof that the complete handshake resists MitM / UKS.
         Complexity: O(N log N) signature + keygen.
         """
         ephem_sk = HybridKEMPrivateKey.generate()
@@ -298,7 +297,7 @@ class PQRatchetSession:
         bob_ephem_pk = HybridKEMPublicKey.from_bytes(resp_pkt.ephemeral_kem_pk_bytes)
         self.state.remote_ephem_pk = bob_ephem_pk
 
-        # Erase initial ephemeral private key (Forward Secrecy)
+        # Drop the initial ephemeral private-key reference after handshake use.
         self.state.local_ephem_sk = None
 
         # Sample Alice's next ephemeral keypair and encapsulate against Bob's PK
@@ -395,6 +394,21 @@ class PQRatchetSession:
             except Exception:
                 raise ValueError("Cryptographic verification failure: invalid AEAD tag on skipped key")
 
+        # Reject sequence abuse before any attacker-controlled KEM decapsulation,
+        # root-key derivation, or fresh-key generation. A new KEM receive chain
+        # always starts at sequence zero; otherwise use the current receive counter.
+        starts_new_recv_chain = packet.kem_ct is not None and self.state.local_ephem_sk is not None
+        early_recv_seq = 0 if starts_new_recv_chain else self.state.receiving_seq
+        if packet.seq < early_recv_seq:
+            raise ValueError(
+                f"Packet sequence number {packet.seq} is behind receiving sequence {early_recv_seq}"
+            )
+        early_gap = packet.seq - early_recv_seq
+        if early_gap > MAX_RATCHET_SKIP_GAP:
+            raise ValueError(
+                f"Packet sequence gap {early_gap} exceeds maximum permissible skip limit ({MAX_RATCHET_SKIP_GAP})"
+            )
+
         # Case 2: Asymmetric Ratchet step present
         
         # We must draft the new state but NOT commit it until AEAD succeeds.
@@ -461,9 +475,9 @@ class PQRatchetSession:
             raise ValueError(f"Packet sequence number {packet.seq} is behind receiving sequence {draft_recv_seq}")
 
         skip_gap = packet.seq - draft_recv_seq
-        if skip_gap > MAX_SKIPPED_KEYS_CACHE:
+        if skip_gap > MAX_RATCHET_SKIP_GAP:
             raise ValueError(
-                f"Packet sequence gap {skip_gap} exceeds maximum permissible skip limit ({MAX_SKIPPED_KEYS_CACHE})"
+                f"Packet sequence gap {skip_gap} exceeds maximum permissible skip limit ({MAX_RATCHET_SKIP_GAP})"
             )
 
         # Fast-forward chain if out-of-order packet (seq > receiving_seq)
@@ -517,6 +531,6 @@ class PQRatchetSession:
 
     def close(self) -> None:
         """
-        Terminates session and securely zeroizes all state.
+        Terminates the session and best-effort clears mutable state buffers.
         """
         self.state.zeroize_all()

@@ -1,11 +1,11 @@
 (*
   pq_ratchet.pv
-  Formal Security Model for the Post-Quantum KEM Double Ratchet Protocol in ProVerif 2.0+.
+  Symbolic Security Model for the Post-Quantum KEM Handshake in ProVerif 2.0+.
   
-  Evaluates:
-  - Strong Secrecy of message payload under active quantum Dolev-Yao adversary.
-  - Mutual Authentication and injective agreement between Alice and Bob with full transcript binding.
-  - Forward Secrecy: Compromise of long-term ML-DSA-65 identity does not expose past sessions.
+  Scope & Evaluated Queries:
+  - Strong Secrecy of message payload under active Dolev-Yao adversary (Query: attacker(secret_payload)).
+  - Injective Agreement between Alice and Bob over the initial handshake transcript (Query: inj-event(alice_finished) ==> inj-event(bob_accepted)).
+  - Note: Primitives are modeled as ideal black-box terms; does not model continuous multi-turn ratcheting or an explicit long-term key compromise phase.
 *)
 
 channel c.

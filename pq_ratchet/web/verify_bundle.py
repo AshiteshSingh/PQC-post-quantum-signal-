@@ -1,6 +1,6 @@
 """
 pq_ratchet.web.verify_bundle
-Independent Client-Side Cryptographic Verifier.
+Client-side asset integrity verifier.
 
 Threat Model & Trust Boundary Specification:
 In browser-based cryptographic applications, dynamic script delivery by a remote web host
@@ -13,7 +13,7 @@ embedded SRI hashes simultaneously. Browsers cannot verify the root HTML documen
 Consequently:
 - Server-Hosted Dynamic Delivery (Weak Trust Boundary): Users inherently trust the web host
   not to inject malicious code into the root document during delivery.
-- Separately Verified Local Copy (Strong Trust Boundary): When users execute a local copy
+- Separately Verified Local Copy: When users execute a local copy
   (e.g., file://index.html, a local web server, or a packaged client) authenticated by this
   verifier prior to execution, the code trust boundary is decoupled from the network relay.
   The remote server operates solely as an untrusted blind WebSocket relay.
@@ -397,10 +397,10 @@ def main() -> int:
     print("=" * 70)
 
     if valid:
-        print("[+] SUCCESS: All local client-side cryptographic assets match authenticated manifest.")
-        print("[+] Local trust boundary verified against release key.")
+        print("[+] SUCCESS: Local client assets match the selected trust anchor and manifest.")
+        print("[!] Asset integrity does not establish protocol or application security.")
         print("[*] Note: For server-hosted web UIs, browsers cannot authenticate root HTML prior to execution.")
-        print("    Use a verified local copy (file:// or standalone client) for zero-trust relay isolation.\n")
+        print("    A separately verified local copy prevents the relay host from changing the delivered client assets.\n")
         return 0
     else:
         print("[!] FAILURE: Integrity verification failed! Possible code tampering or corruption.\n")

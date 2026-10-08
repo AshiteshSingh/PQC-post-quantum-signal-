@@ -24,6 +24,16 @@ from pq_ratchet.constants import (
 from pq_ratchet.primitives.hybrid_kem import HybridKEMCiphertext, HybridKEMPublicKey
 
 
+HANDSHAKE_INIT_PACKET_BYTES = (
+    6 + MLDSA65_PUBLIC_KEY_BYTES + MLKEM768_PUBLIC_KEY_BYTES + X25519_KEY_BYTES
+    + MLDSA65_SIGNATURE_BYTES
+)
+HANDSHAKE_RESP_PACKET_BYTES = (
+    6 + MLDSA65_PUBLIC_KEY_BYTES + MLKEM768_CIPHERTEXT_BYTES + X25519_KEY_BYTES
+    + MLKEM768_PUBLIC_KEY_BYTES + X25519_KEY_BYTES + MLDSA65_SIGNATURE_BYTES
+)
+
+
 class HandshakeInitPacket(NamedTuple):
     """
     Handshake Initiation frame.
@@ -46,6 +56,10 @@ class HandshakeInitPacket(NamedTuple):
 
     @classmethod
     def deserialize(cls, data: bytes) -> "HandshakeInitPacket":
+        if len(data) != HANDSHAKE_INIT_PACKET_BYTES:
+            raise ValueError(
+                f"Malformed handshake init packet length: expected {HANDSHAKE_INIT_PACKET_BYTES}, got {len(data)}"
+            )
         if len(data) < 6:
             raise ValueError("Packet underflow: missing header")
         magic, ver, msg_type = struct.unpack("!4sBB", data[:6])
@@ -102,6 +116,10 @@ class HandshakeRespPacket(NamedTuple):
 
     @classmethod
     def deserialize(cls, data: bytes) -> "HandshakeRespPacket":
+        if len(data) != HANDSHAKE_RESP_PACKET_BYTES:
+            raise ValueError(
+                f"Malformed handshake response length: expected {HANDSHAKE_RESP_PACKET_BYTES}, got {len(data)}"
+            )
         if len(data) < 6:
             raise ValueError("Packet underflow: missing header")
         magic, ver, msg_type = struct.unpack("!4sBB", data[:6])
@@ -183,6 +201,8 @@ class RatchetDataPacket(NamedTuple):
         magic, ver, msg_type, epoch, seq, flags = struct.unpack("!4sBBIIB", data[:15])
         if magic != MAGIC_BYTES or ver != PROTOCOL_VERSION or msg_type != MSG_TYPE_RATCHET_DATA:
             raise ValueError("Invalid ratchet packet header")
+        if flags & ~0x03:
+            raise ValueError("Unsupported ratchet packet flags")
 
         offset = 15
         kem_ct = None
@@ -209,6 +229,8 @@ class RatchetDataPacket(NamedTuple):
         ciphertext = data[offset:offset + ct_len]
         if len(ciphertext) != ct_len:
             raise ValueError("Incomplete ciphertext payload")
+        if offset + ct_len != len(data):
+            raise ValueError("Unexpected trailing bytes after ratchet ciphertext")
 
         return cls(
             epoch=epoch,
