@@ -94,6 +94,7 @@ class PQRatchetSession:
         self.state = state
         self._pending_kem_ct: Optional[bytes] = None
         self._pending_next_kem_pk: Optional[bytes] = None
+        self._handshake_pending = False
 
     def _discard_uncommitted_draft(
         self,
@@ -154,6 +155,7 @@ class PQRatchetSession:
         state.local_ephem_sk = ephem_sk
 
         session = cls(state)
+        session._handshake_pending = True
         return session, init_packet.serialize()
 
     @classmethod
@@ -239,7 +241,11 @@ class PQRatchetSession:
         Returns True if authentic and valid; False on any cryptographic, framing, or identity mismatch.
         Complexity: O(N log N) signature verification + O(1) KEM framing validation.
         """
-        if not self.state.is_initiator or self.state.local_ephem_sk is None:
+        if (
+            not self._handshake_pending
+            or not self.state.is_initiator
+            or self.state.local_ephem_sk is None
+        ):
             return False
 
         try:
@@ -275,7 +281,11 @@ class PQRatchetSession:
         Completes initiator handshake (Alice receives Bob's response).
         Decapsulates Bob's ciphertext, authenticates Bob's signature on full transcript, sets up initial root.
         """
-        if not self.state.is_initiator or self.state.local_ephem_sk is None:
+        if (
+            not self._handshake_pending
+            or not self.state.is_initiator
+            or self.state.local_ephem_sk is None
+        ):
             raise RuntimeError("Session state is not in a pending initiator handshake")
 
         resp_pkt = HandshakeRespPacket.deserialize(resp_packet_bytes)
@@ -297,51 +307,58 @@ class PQRatchetSession:
         if not resp_id_pk.verify(resp_pkt.signature, expected_resp_transcript):
             raise ValueError("Cryptographic verification failure: invalid responder handshake transcript signature")
 
-        if self.state.remote_identity is None:
-            self.state.remote_identity = resp_id_pk
-
-        # Decapsulate shared secret
         kem_ct = HybridKEMCiphertext.from_bytes(resp_pkt.kem_ct_bytes)
-        shared_secret = self.state.local_ephem_sk.decapsulate(kem_ct)
-
-        # Ingest initial root key and initialize receiving chain key
-        root_key, recv_chain = asymmetric_ratchet_kdf(
-            root_key=DOMAIN_ROOT_INIT,
-            combined_shared_secret=shared_secret,
-            context=DOMAIN_ASYM_RATCHET,
-        )
-
-        self.state.root_key = bytearray(root_key)
-        self.state.receiving_chain_key = bytearray(recv_chain)
-
-        # Store Bob's ephemeral public key
         bob_ephem_pk = HybridKEMPublicKey.from_bytes(resp_pkt.ephemeral_kem_pk_bytes)
+        draft_root_key: Optional[bytearray] = None
+        draft_receiving_chain_key: Optional[bytearray] = None
+        draft_sending_chain_key: Optional[bytearray] = None
+        try:
+            # Keep the handshake pending until both directions and the first
+            # outbound KEM transition are fully derived.
+            shared_secret = self.state.local_ephem_sk.decapsulate(kem_ct)
+            root_key, recv_chain = asymmetric_ratchet_kdf(
+                root_key=DOMAIN_ROOT_INIT,
+                combined_shared_secret=shared_secret,
+                context=DOMAIN_ASYM_RATCHET,
+            )
+            draft_root_key = bytearray(root_key)
+            draft_receiving_chain_key = bytearray(recv_chain)
+
+            alice_next_sk = HybridKEMPrivateKey.generate()
+            alice_next_pk = alice_next_sk.public_key()
+            next_kem_ct, next_ss = bob_ephem_pk.encapsulate()
+
+            new_root, send_chain = asymmetric_ratchet_kdf(
+                root_key=bytes(draft_root_key),
+                combined_shared_secret=next_ss,
+                context=DOMAIN_ASYM_RATCHET,
+            )
+            zeroize(draft_root_key)
+            draft_root_key = bytearray(new_root)
+            draft_sending_chain_key = bytearray(send_chain)
+            pending_kem_ct = next_kem_ct.to_bytes()
+            pending_next_kem_pk = alice_next_pk.to_bytes()
+        except BaseException:
+            if draft_root_key is not None:
+                zeroize(draft_root_key)
+            if draft_receiving_chain_key is not None:
+                zeroize(draft_receiving_chain_key)
+            if draft_sending_chain_key is not None:
+                zeroize(draft_sending_chain_key)
+            raise
+
+        # Commit only once every handshake derivation succeeded.
+        zeroize(self.state.root_key)
+        self.state.root_key = draft_root_key
+        self.state.receiving_chain_key = draft_receiving_chain_key
+        self.state.sending_chain_key = draft_sending_chain_key
+        self.state.remote_identity = resp_id_pk
         self.state.remote_ephem_pk = bob_ephem_pk
-
-        # Drop the initial ephemeral private-key reference after handshake use.
-        self.state.local_ephem_sk = None
-
-        # Sample Alice's next ephemeral keypair and encapsulate against Bob's PK
-        alice_next_sk = HybridKEMPrivateKey.generate()
-        alice_next_pk = alice_next_sk.public_key()
-        next_kem_ct, next_ss = bob_ephem_pk.encapsulate()
-
-        # Advance root key to derive Alice's sending chain key
-        new_root, send_chain = asymmetric_ratchet_kdf(
-            root_key=bytes(self.state.root_key),
-            combined_shared_secret=next_ss,
-            context=DOMAIN_ASYM_RATCHET,
-        )
-        self.state.root_key = bytearray(new_root)
-        self.state.sending_chain_key = bytearray(send_chain)
         self.state.local_ephem_sk = alice_next_sk
-
-        # Queue KEM CT and Next PK for outbound packet
-        self._pending_kem_ct = next_kem_ct.to_bytes()
-        self._pending_next_kem_pk = alice_next_pk.to_bytes()
-
-        # Epoch advancement: first outbound asymmetric ratchet generation
+        self._pending_kem_ct = pending_kem_ct
+        self._pending_next_kem_pk = pending_next_kem_pk
         self.state.epoch += 1
+        self._handshake_pending = False
 
     def ratchet_encrypt(self, plaintext: bytes) -> bytes:
         """
@@ -617,3 +634,6 @@ class PQRatchetSession:
         Terminates the session and best-effort clears mutable state buffers.
         """
         self.state.zeroize_all()
+        self._pending_kem_ct = None
+        self._pending_next_kem_pk = None
+        self._handshake_pending = False
