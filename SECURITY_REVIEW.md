@@ -26,9 +26,9 @@ The Python ratchet correctly rejects excessive sequence gaps before KEM decapsul
 
 **Impact:** Remote resource exhaustion against a victim with an active E2EE session. The existing packet, peer, and session caps do not bound the rate of this cryptographic work per session.
 
-**Incremental mitigation:** The native Python ratchet now rejects KEM transitions before decapsulation after three failed transition attempts in a fixed 60-second window for that session. Failed KEM processing and failed AEAD authentication both consume the budget; an authenticated transition clears it. This narrows repeated work on one live Python session, but active and staged sessions have separate budgets, session replacement can start a new budget, and the signed browser client is unchanged. An attacker can consume a session's budget and delay a legitimate transition until the window expires. This is a bounded-work mitigation, not general DoS protection.
+**Incremental mitigation:** The native Python ratchet rejects KEM transitions before decapsulation after three failed transition attempts in a fixed 60-second window for that session. Failed KEM processing and failed AEAD authentication both consume the budget. The P2P destination also caps failed transition frames per peer across active/staged candidates and retains that window across session replacement; a frame can still be tried against both candidates. An authenticated transition clears the peer budget. The signed browser client is unchanged. An attacker can consume the budget and delay a legitimate transition until the window expires. These are bounded-work mitigations, not general DoS protection.
 
-**Required before production:** Design and review resource budgets across active/staged sessions and session replacement, define when a session is invalidated or re-established, and include adversarial load and availability behavior in resource testing.
+**Required before production:** Review the combined per-session and per-peer budgets, define when a session is invalidated or re-established, reconcile browser behavior, and include adversarial load and availability behavior in resource testing.
 
 ### P1 — Browser and Python ratchets have security-relevant behavior differences
 

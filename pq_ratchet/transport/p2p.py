@@ -14,9 +14,16 @@ import hashlib
 import ipaddress
 import re
 import secrets
+import time
 from collections import deque
 from typing import Dict, List, Tuple, Optional, Callable, Union
-from pq_ratchet.constants import AEAD_TAG_BYTES, MAX_PACKET_PAYLOAD_BYTES
+from pq_ratchet.constants import (
+    AEAD_TAG_BYTES,
+    KEM_FAILURE_WINDOW_SECONDS,
+    MAX_FAILED_KEM_TRANSITIONS,
+    MAX_PACKET_PAYLOAD_BYTES,
+    MAX_RATCHET_COUNTER,
+)
 from pq_ratchet.primitives.identity import (
     IdentityPrivateKey,
     IdentityPublicKey,
@@ -42,6 +49,7 @@ MAX_PEER_EXCHANGE_ENTRIES = 256
 MAX_PENDING_E2EE_INITS = 64
 MAX_ACTIVE_E2EE_SESSIONS = 256
 MAX_STAGED_E2EE_SESSIONS = 64
+MAX_PEER_KEM_FAILURE_TRACKERS = MAX_KNOWN_PUBLIC_KEYS
 PEER_ID_PATTERN = re.compile(r"^pqc_[0-9a-f]{32}$")
 HOSTNAME_PATTERN = re.compile(
     r"^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)"
@@ -173,6 +181,7 @@ class PQP2PNode:
         self._e2ee_sessions: Dict[str, PQRatchetSession] = {}
         self._staged_e2ee_sessions: Dict[str, PQRatchetSession] = {}
         self._pending_e2ee_inits: Dict[str, Tuple[PQRatchetSession, asyncio.Event]] = {}
+        self._peer_kem_failures: Dict[str, Tuple[float, int]] = {}
         # Ratchet state and relay dispatch order must stay aligned across callers.
         self._e2ee_send_lock = asyncio.Lock()
         self._seen_handshake_inits = _BoundedSeenSet(MAX_SEEN_HANDSHAKE_INITS)
@@ -255,6 +264,7 @@ class PQP2PNode:
                 pass
             event.set()
         self._pending_e2ee_inits.clear()
+        self._peer_kem_failures.clear()
         self._seen_handshake_inits.clear()
         self._seen_relay_ids.clear()
 
@@ -282,6 +292,47 @@ class PQP2PNode:
                     self._known_pks[peer_id] = tp
                 return tp
         return None
+
+    def _peer_kem_transition_allowed(self, peer_id: str) -> bool:
+        """Apply a bounded failed-transition window across session candidates."""
+        now = time.monotonic()
+        failure_state = self._peer_kem_failures.get(peer_id)
+        if failure_state is not None:
+            if now - failure_state[0] < KEM_FAILURE_WINDOW_SECONDS:
+                return failure_state[1] < MAX_FAILED_KEM_TRANSITIONS
+            self._peer_kem_failures.pop(peer_id, None)
+
+        if len(self._peer_kem_failures) >= MAX_PEER_KEM_FAILURE_TRACKERS:
+            self._prune_expired_peer_kem_failures(now)
+
+        # Do not grow this cache from relay-controlled peer IDs without a bound.
+        return len(self._peer_kem_failures) < MAX_PEER_KEM_FAILURE_TRACKERS
+
+    def _prune_expired_peer_kem_failures(self, now: float) -> None:
+        expired = [
+            candidate_id
+            for candidate_id, (window_start, _) in self._peer_kem_failures.items()
+            if now - window_start >= KEM_FAILURE_WINDOW_SECONDS
+        ]
+        for candidate_id in expired:
+            self._peer_kem_failures.pop(candidate_id, None)
+
+    def _record_peer_kem_transition_failure(self, peer_id: str) -> None:
+        now = time.monotonic()
+        failure_state = self._peer_kem_failures.get(peer_id)
+        if failure_state is not None and now - failure_state[0] < KEM_FAILURE_WINDOW_SECONDS:
+            self._peer_kem_failures[peer_id] = (failure_state[0], failure_state[1] + 1)
+            return
+
+        if failure_state is not None:
+            self._peer_kem_failures.pop(peer_id, None)
+        if len(self._peer_kem_failures) >= MAX_PEER_KEM_FAILURE_TRACKERS:
+            self._prune_expired_peer_kem_failures(now)
+        if len(self._peer_kem_failures) < MAX_PEER_KEM_FAILURE_TRACKERS:
+            self._peer_kem_failures[peer_id] = (now, 1)
+
+    def _clear_peer_kem_transition_failures(self, peer_id: str) -> None:
+        self._peer_kem_failures.pop(peer_id, None)
 
     def _abort_pending_e2ee_init(
         self,
@@ -1071,16 +1122,35 @@ class PQP2PNode:
             return
 
         if msg_type == P2PMessageEnvelope.TYPE_E2EE_RATCHET_DATA:
+            try:
+                packet = RatchetDataPacket.deserialize(raw_payload)
+            except Exception:
+                return
+
             plaintext = None
             active_session = self._e2ee_sessions.get(origin)
+            staged_session = self._staged_e2ee_sessions.get(origin)
+            has_pending_kem_candidate = any(
+                candidate is not None and candidate.state.local_ephem_sk is not None
+                for candidate in (active_session, staged_session)
+            )
+            may_trigger_kem_work = (
+                packet.kem_ct is not None
+                and packet.next_kem_pk is not None
+                and packet.seq == 0
+                and packet.epoch < MAX_RATCHET_COUNTER
+                and has_pending_kem_candidate
+            )
+            if may_trigger_kem_work and not self._peer_kem_transition_allowed(origin):
+                return
+
             if active_session is not None:
                 try:
                     plaintext = active_session.ratchet_decrypt(raw_payload)
                 except Exception:
                     plaintext = None
 
-            if plaintext is None and origin in self._staged_e2ee_sessions:
-                staged_session = self._staged_e2ee_sessions[origin]
+            if plaintext is None and staged_session is not None:
                 try:
                     plaintext = staged_session.ratchet_decrypt(raw_payload)
                     # Promotion: Staged session successfully authenticated inbound frame
@@ -1098,7 +1168,12 @@ class PQP2PNode:
                     plaintext = None
 
             if plaintext is None:
+                if may_trigger_kem_work:
+                    self._record_peer_kem_transition_failure(origin)
                 return
+
+            if packet.kem_ct is not None:
+                self._clear_peer_kem_transition_failures(origin)
 
             if self.on_message_received:
                 self.on_message_received(origin, plaintext)
