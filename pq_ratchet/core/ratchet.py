@@ -4,6 +4,7 @@ Post-Quantum KEM Double Ratchet Engine (FIPS 203 ML-KEM-768 + FIPS 204 ML-DSA-65
 """
 
 import struct
+import time
 from typing import Tuple, Optional, List
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from pq_ratchet.constants import (
@@ -16,6 +17,8 @@ from pq_ratchet.constants import (
     MAX_RATCHET_SKIP_GAP,
     MAX_PACKET_PAYLOAD_BYTES,
     MAX_RATCHET_COUNTER,
+    MAX_FAILED_KEM_TRANSITIONS,
+    KEM_FAILURE_WINDOW_SECONDS,
     AEAD_TAG_BYTES,
 )
 from pq_ratchet.primitives.identity import (
@@ -95,6 +98,24 @@ class PQRatchetSession:
         self._pending_kem_ct: Optional[bytes] = None
         self._pending_next_kem_pk: Optional[bytes] = None
         self._handshake_pending = False
+        self._kem_failure_window_started_at: Optional[float] = None
+        self._failed_kem_transitions = 0
+
+    def _kem_transition_attempt_allowed(self) -> bool:
+        """Bound expensive unauthenticated KEM work for each live session."""
+        now = time.monotonic()
+        if (
+            self._kem_failure_window_started_at is None
+            or now - self._kem_failure_window_started_at >= KEM_FAILURE_WINDOW_SECONDS
+        ):
+            self._kem_failure_window_started_at = now
+            self._failed_kem_transitions = 0
+        return self._failed_kem_transitions < MAX_FAILED_KEM_TRANSITIONS
+
+    def _record_failed_kem_transition(self) -> None:
+        # Refresh an expired window before counting this failure.
+        self._kem_transition_attempt_allowed()
+        self._failed_kem_transitions += 1
 
     def _discard_uncommitted_draft(
         self,
@@ -476,6 +497,8 @@ class PQRatchetSession:
             raise ValueError("KEM ratchet transitions must begin at sequence zero")
         if packet.kem_ct is not None and packet.epoch == MAX_RATCHET_COUNTER:
             raise ValueError("KEM ratchet transition would overflow the epoch counter")
+        if packet.kem_ct is not None and not self._kem_transition_attempt_allowed():
+            raise ValueError("KEM transition failure rate exceeded for this session")
 
         # Case 2: Asymmetric Ratchet step present
         
@@ -543,6 +566,8 @@ class PQRatchetSession:
                     draft_pending_next_kem_pk = local_next_pk.to_bytes()
                     draft_epoch = packet.epoch + 1
         except BaseException:
+            if packet.kem_ct is not None:
+                self._record_failed_kem_transition()
             self._discard_uncommitted_draft(
                 draft_root_key, draft_recv_chain, draft_send_chain, skipped_keys
             )
@@ -592,6 +617,8 @@ class PQRatchetSession:
                 del message_key
                 raise ValueError("Cryptographic verification failure: invalid AEAD tag") from exc
         except BaseException:
+            if packet.kem_ct is not None:
+                self._record_failed_kem_transition()
             self._discard_uncommitted_draft(
                 draft_root_key, draft_recv_chain, draft_send_chain, skipped_keys
             )
@@ -618,6 +645,11 @@ class PQRatchetSession:
         self.state.epoch = draft_epoch
         self.state.receiving_seq = draft_recv_seq
         self.state.sending_seq = draft_send_seq
+        if packet.kem_ct is not None:
+            # An authenticated KEM transition proves the peer can complete the
+            # exchange, so begin a fresh failure window for subsequent updates.
+            self._kem_failure_window_started_at = None
+            self._failed_kem_transitions = 0
         
         try:
             for ep, sq, key in skipped_keys:
@@ -637,3 +669,5 @@ class PQRatchetSession:
         self._pending_kem_ct = None
         self._pending_next_kem_pk = None
         self._handshake_pending = False
+        self._kem_failure_window_started_at = None
+        self._failed_kem_transitions = 0
