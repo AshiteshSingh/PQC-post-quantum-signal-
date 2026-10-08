@@ -8,7 +8,7 @@
 
 This repository uses standardized cryptographic primitives, but it implements a custom interactive handshake and custom KEM-based ratchet. It is not an implementation of Signal PQXDH or Signal's Double Ratchet. The current Signal Double Ratchet specification describes distinct symmetric and public-key ratchets, and its newer post-quantum constructions define additional SCKA/SPQR and hybrid Triple Ratchet state. Those analyses do not transfer to this repository's protocol merely because some primitive names match. See the [Signal Double Ratchet specification](https://signal.org/docs/specifications/doubleratchet/) and [PQXDH specification](https://signal.org/docs/specifications/pqxdh/).
 
-The most immediate production blockers are transition delivery/recovery, unauthenticated expensive KEM work in the relay path, browser/native implementation divergence, and the absence of a proof or independent review for the complete protocol. The browser files are signed; changing them without the authorized release signer would invalidate the current release manifest and signature.
+The most immediate production blockers include a secret-only hybrid KEM combiner that does not establish generic active-attack (IND-CCA) security, transition delivery/recovery, unauthenticated expensive KEM work in the relay path, browser/native implementation divergence, and the absence of a proof or independent review for the complete protocol. The browser files are signed; changing them without the authorized release signer would invalidate the current release manifest and signature.
 
 ## Findings
 
@@ -72,6 +72,14 @@ The package allows any `cryptography` version at or above a minimum rather than 
 
 This follow-up is by the same reviewer in the same work session. It is not independent third-party work and does not replace a cryptographer's protocol review. The notes below were confirmed by source inspection only; no exploit demonstration, tests, formal model execution, or runtime validation was performed.
 
+### P1 — The hybrid KEM combiner does not establish generic active-attack security
+
+The custom hybrid KEM concatenates only the ML-KEM and X25519 shared secrets, then applies HKDF-SHA3-512 with a fixed domain string ([kdf.py](pq_ratchet/primitives/kdf.py#L73-L106)). The encapsulation and decapsulation paths pass no component ciphertexts or encapsulation keys into the combiner ([hybrid_kem.py](pq_ratchet/primitives/hybrid_kem.py#L74-L106), [hybrid_kem.py](pq_ratchet/primitives/hybrid_kem.py#L142-L168)). NIST SP 800-227 §4.6.3 specifically warns that the secret-only form `K <- KDF(K1,K2)` does not preserve IND-CCA security, regardless of which KDF is used, and gives a CCA-preserving construction that hashes both secrets, both ciphertexts, and a domain separator (with encapsulation keys also useful for protocol identity binding) ([NIST SP 800-227, §4.6.3](https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-227.pdf)).
+
+**Impact:** The repository has no proof that its hybrid key establishment remains secure against active attacks when one component is broken or attacker-controlled. This is a protocol assurance failure and blocks any claim that the combined mechanism is robust if either ML-KEM or X25519 remains secure. This source review does not demonstrate a practical exploit against the current implementation.
+
+**Required before production:** Replace this with a reviewed, CCA-preserving hybrid combiner over canonical component ciphertexts and a unique domain separator that fixes algorithm ordering, parameter sets, and protocol version; bind public keys/identities as specified by the selected design. Obtain a security analysis for the exact construction and its use in both handshake and ratchet before making a hybrid-security claim. Changing only the KDF or retaining the current secret-only input is not sufficient.
+
 ### P2 — A normal browser peer disconnect erases the app-wide identity key
 
 The signed browser bundle still has `PQRatchetSession.close()` zeroize the secret-key bytes of the `localIdentity` object that the app also owns ([pq-crypto.bundle.js](pq_ratchet/web/static/pq-crypto.bundle.js#L5588-L5596)). The normal `onPeerDisconnected()` handler calls `ratchetSession.close()` but leaves the app's `localIdentity` variable set ([app.js](pq_ratchet/web/static/app.js#L668-L685)); until the signed bundle is updated, the next handshake can therefore see an erased key. The app normally restores or generates this identity once during initialization, rather than recreating it for each peer ([app.js](pq_ratchet/web/static/app.js#L115-L146)).
@@ -100,7 +108,7 @@ The current Python ratchet and P2P relay peer tracker cap failed KEM transitions
 
 ## Review conclusion
 
-The production decision remains **not approved**. The review confirms some meaningful hardening in framing, identity pinning, browser-asset verification, transactional receive handling, and Python KEM-work limits. Those controls do not establish the custom hybrid combiner or ratchet's security, and they do not make the browser and Python implementations one proven protocol. The current code is still an experimental custom cryptographic protocol and needs an independent protocol/implementation audit plus the release gates below before production use.
+The production decision remains **not approved**. The review confirms some meaningful hardening in framing, identity pinning, browser-asset verification, transactional receive handling, and Python KEM-work limits. The secret-only hybrid combiner is not shown to preserve generic active-attack security, and the custom ratchet has no complete security analysis. These controls also do not make the browser and Python implementations one proven protocol. The current code is still an experimental custom cryptographic protocol and needs a corrected combiner, an independent protocol/implementation audit, and the release gates below before production use.
 
 ### Browser release candidate status
 
@@ -123,7 +131,7 @@ The integration tests exposed that an earlier relay validation change rejected t
 
 ## Release gates
 
-1. Choose: replace the custom protocol with a maintained reviewed protocol implementation, or commission a protocol design review before further feature work.
+1. Choose: replace the custom protocol with a maintained reviewed protocol implementation, or commission a protocol design review before further feature work; either path must use a reviewed hybrid combiner with a stated active-attack security argument.
 2. Specify a single state machine, including message delivery, transition acknowledgments, retransmission, replay, simultaneous sends, session replacement, and epoch rules.
 3. Reconcile native and browser implementations and publish cross-language vectors for every handshake and ratchet transition.
 4. Rebuild/sign browser assets using the authorized release signer and establish reproducible release verification.
