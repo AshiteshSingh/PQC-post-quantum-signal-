@@ -414,46 +414,57 @@ class PQRatchetSession:
         if self.state.sending_chain_key is None:
             raise RuntimeError("Sending chain key not initialized")
 
-        # Advance symmetric sending chain key: CK_s -> (CK_s', MK)
+        # Draft the next chain state. Do not commit it until encryption and
+        # serialization both succeed, or a local backend/allocation error can
+        # consume a key without producing a packet.
         next_chain, message_key = symmetric_chain_step(bytes(self.state.sending_chain_key))
-        zeroize(self.state.sending_chain_key)
-        self.state.sending_chain_key = bytearray(next_chain)
-
+        draft_sending_chain = bytearray(next_chain)
+        del next_chain
         seq = self.state.sending_seq
         epoch = self.state.epoch
-        self.state.sending_seq += 1
-
         kem_ct = self._pending_kem_ct
         next_kem_pk = self._pending_next_kem_pk
+        try:
+            prelim_packet = RatchetDataPacket(
+                epoch=epoch,
+                seq=seq,
+                kem_ct=kem_ct,
+                next_kem_pk=next_kem_pk,
+                ciphertext=b"",
+            )
+            ad = prelim_packet.get_associated_data()
+            nonce = RatchetDataPacket.derive_nonce(epoch, seq)
+
+            aead = ChaCha20Poly1305(message_key)
+            ciphertext = aead.encrypt(nonce, plaintext, ad)
+            final_packet = RatchetDataPacket(
+                epoch=epoch,
+                seq=seq,
+                kem_ct=kem_ct,
+                next_kem_pk=next_kem_pk,
+                ciphertext=ciphertext,
+            )
+            serialized_packet = final_packet.serialize()
+        except BaseException:
+            zeroize(draft_sending_chain)
+            raise
+        finally:
+            # message_key is immutable bytes; unbind it as soon as possible.
+            del message_key
+
+        previous_sending_chain = self.state.sending_chain_key
+        self.state.sending_chain_key = draft_sending_chain
+        self.state.sending_seq = seq + 1
         self._pending_kem_ct = None
         self._pending_next_kem_pk = None
-
-        prelim_packet = RatchetDataPacket(
-            epoch=epoch,
-            seq=seq,
-            kem_ct=kem_ct,
-            next_kem_pk=next_kem_pk,
-            ciphertext=b"",
-        )
-        ad = prelim_packet.get_associated_data()
-        nonce = RatchetDataPacket.derive_nonce(epoch, seq)
-
-        aead = ChaCha20Poly1305(message_key)
-        ciphertext = aead.encrypt(nonce, plaintext, ad)
-
-        # Explicitly unbind message key reference.
-        # Note: message_key is an immutable bytes instance from HMAC; CPython does not permit
-        # in-place memory mutation of immutable bytes from userland. Reference unbinding enables GC.
-        del message_key
-
-        final_packet = RatchetDataPacket(
-            epoch=epoch,
-            seq=seq,
-            kem_ct=kem_ct,
-            next_kem_pk=next_kem_pk,
-            ciphertext=ciphertext,
-        )
-        return final_packet.serialize()
+        try:
+            zeroize(previous_sending_chain)
+        except Exception:
+            # Packet construction already succeeded and state is committed;
+            # best-effort cleanup must not turn that packet into a local send
+            # failure that strands the peer on the previous chain.
+            pass
+        return serialized_packet
 
     def ratchet_decrypt(self, packet_bytes: bytes) -> bytes:
         """

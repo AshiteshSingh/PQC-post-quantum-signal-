@@ -2,7 +2,7 @@
 
 **Review date:** 2026-10-08
 **Decision:** **Not approved for production use. Keep the experimental/unaudited warning.**
-**Review type:** First-pass static review of the checked-in Python, browser, transport, and ProVerif sources. This is not an independent cryptographic audit. Tests, ProVerif, dependency builds, and runtime behavior were not executed for this review.
+**Review type:** Static review of the checked-in Python, browser, transport, and ProVerif sources, with an adversarial follow-up on 2026-10-08. This is not an independent cryptographic audit. Tests, ProVerif, dependency builds, and runtime behavior were not executed for this review.
 
 ## Executive assessment
 
@@ -67,6 +67,38 @@ The server now verifies the signed manifest and exact asset bytes at startup, th
 The package allows any `cryptography` version at or above a minimum rather than pinning a reviewed deployment build ([pyproject.toml](pyproject.toml)). NIST's FIPS 203 page currently carries a planning note that an issue will be corrected in a future revision; deployments must track the applicable errata and the exact backend implementation. Primitive conformance also does not establish a FIPS 140-3 validated module or constant-time behavior for this application. See [NIST FIPS 203](https://csrc.nist.gov/pubs/fips/203/final) and [NIST FIPS 204](https://csrc.nist.gov/pubs/fips/204/final).
 
 **Required before production:** Pin and reproducibly build dependencies, track NIST errata and vendor advisories, document supported platforms/backends, and obtain the compliance validation the deployment actually requires.
+
+## Fresh adversarial follow-up (2026-10-08)
+
+This follow-up is by the same reviewer in the same work session. It is not independent third-party work and does not replace a cryptographer's protocol review. The notes below were confirmed by source inspection only; no exploit demonstration, tests, formal model execution, or runtime validation was performed.
+
+### P2 — A normal browser peer disconnect erases the app-wide identity key
+
+`PQRatchetSession` retains the same `localIdentity` object owned by the browser app. Its `close()` method zeroizes that identity's secret-key byte array ([pqc-engine.js](web_builder/src/pqc-engine.js#L1050-L1059)). The normal `onPeerDisconnected()` handler calls `ratchetSession.close()` but leaves the app's `localIdentity` variable set ([app.js](pq_ratchet/web/static/app.js#L668-L685)); the next handshake therefore sees an object whose secret bytes have already been erased. The app normally restores or generates this identity once during initialization, rather than recreating it for each peer ([app.js](pq_ratchet/web/static/app.js#L115-L146)).
+
+**Impact:** After an ordinary peer disconnect, subsequent handshakes in the same page can fail when signing. A page reload may restore the key from its local encrypted storage, but the app does not perform that recovery here.
+
+**Required before production:** Give session teardown ownership only of session keys. Keep the long-term identity lifecycle in the application layer, and define explicit logout/lock behavior that zeroizes and then reloads or drops the identity object.
+
+### P2 — The signed browser ratchet still commits outbound state before encryption and serialization succeed
+
+The native Python source now drafts the next sending chain and commits the chain, sequence, and pending KEM fields only after AEAD encryption and packet serialization succeed ([ratchet.py](pq_ratchet/core/ratchet.py#L417-L462)). This change was inspected but not exercised. The browser source and signed bundle still advance the chain, increment the sequence, and clear pending KEM fields before AEAD encryption and serialization complete ([pqc-engine.js](web_builder/src/pqc-engine.js#L881-L904), [pq-crypto.bundle.js](pq_ratchet/web/static/pq-crypto.bundle.js#L5444-L5472)). The browser caller catches encryption errors and displays a toast, then leaves the ratchet session active ([app.js](pq_ratchet/web/static/app.js#L448-L478)).
+
+**Impact:** In the browser, if an AEAD backend, allocation, or serialization operation throws after the state advance, the caller receives no packet but the next send uses a later key/sequence; a pending KEM transition may also be lost. This is a state-integrity and availability defect, not evidence of plaintext recovery.
+
+**Required before production:** Apply the same draft/commit behavior to the browser source, rebuild the bundle, and sign it with the authorized release key. If transport dispatch is uncertain after commit, close that session and establish a fresh one, or add an authenticated delivery/recovery protocol.
+
+### Confirmed control and remaining limit — relay KEM work is bounded in Python, not equivalently in the browser
+
+The current Python ratchet and relay peer tracker cap failed KEM transitions, including across active/staged candidates and session replacement ([ratchet.py](pq_ratchet/core/ratchet.py#L100-L118), [p2p.py](pq_ratchet/transport/p2p.py#L296-L335), [p2p.py](pq_ratchet/transport/p2p.py#L1131-L1152)). The browser still performs KEM decapsulation and may generate/encapsulate fresh keys before AEAD verification and before checking the sequence gap ([pqc-engine.js](web_builder/src/pqc-engine.js#L941-L983)). The relay's general per-connection limit of 25 requests per second is a coarse cap, not a client-side cryptographic-work budget ([app.py](pq_ratchet/web/app.py#L591-L599)).
+
+**Impact:** A peer able to deliver forged transition packets can cause repeated expensive browser work up to the relay's general traffic limit. This is a resource-exhaustion and cross-client parity concern; the source alone does not establish that confidentiality is broken.
+
+**Required before production:** Apply equivalent transition-specific limits before decapsulation in every client, check counters/epoch/field pairing before expensive work, and test adversarial load and recovery behavior.
+
+## Review conclusion
+
+The production decision remains **not approved**. The review confirms some meaningful hardening in framing, identity pinning, browser-asset verification, transactional receive handling, and Python KEM-work limits. Those controls do not establish the custom hybrid combiner or ratchet's security, and they do not make the browser and Python implementations one proven protocol. The current code is still an experimental custom cryptographic protocol and needs an independent protocol/implementation audit plus the release gates below before production use.
 
 ## Release gates
 
