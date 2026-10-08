@@ -37,6 +37,7 @@ MAX_INBOUND_HANDSHAKES = 64
 MAX_OUTBOUND_HANDSHAKES = 64
 MAX_ACTIVE_PEERS = 256
 MAX_KNOWN_ADDRESSES = 512
+MAX_KNOWN_PUBLIC_KEYS = 1024
 MAX_PEER_EXCHANGE_ENTRIES = 256
 MAX_PENDING_E2EE_INITS = 64
 MAX_ACTIVE_E2EE_SESSIONS = 256
@@ -149,6 +150,8 @@ class PQP2PNode:
         listen_port: int = 9100,
         public_host: Optional[str] = None,
     ) -> None:
+        if len(trusted_peers) > MAX_KNOWN_PUBLIC_KEYS:
+            raise ValueError(f"Trusted peer list exceeds maximum size ({MAX_KNOWN_PUBLIC_KEYS})")
         self.local_identity = local_identity
         self.trusted_peers = list(trusted_peers)
         self.public_key = local_identity.public_key()
@@ -259,6 +262,8 @@ class PQP2PNode:
         Complexity: O(1).
         """
         pid = derive_peer_id(pk)
+        if pid not in self._known_pks and len(self._known_pks) >= MAX_KNOWN_PUBLIC_KEYS:
+            raise ValueError(f"Known peer key cache is full ({MAX_KNOWN_PUBLIC_KEYS} entries)")
         self._known_pks[pid] = pk
         return pid
 
@@ -271,7 +276,8 @@ class PQP2PNode:
             return self._known_pks[peer_id]
         for tp in self.trusted_peers:
             if derive_peer_id(tp) == peer_id:
-                self._known_pks[peer_id] = tp
+                if len(self._known_pks) < MAX_KNOWN_PUBLIC_KEYS:
+                    self._known_pks[peer_id] = tp
                 return tp
         return None
 
@@ -401,7 +407,8 @@ class PQP2PNode:
         self._peers[remote_id] = session
         if host is not None and port is not None:
             self._known_addresses[remote_id] = (host, port)
-        self._known_pks[remote_id] = remote_pk
+        if remote_id in self._known_pks or len(self._known_pks) < MAX_KNOWN_PUBLIC_KEYS:
+            self._known_pks[remote_id] = remote_pk
         asyncio.create_task(self._peer_read_loop(remote_id, session))
 
         if existing is not None:
@@ -564,7 +571,8 @@ class PQP2PNode:
         if target_pk is not None:
             if derive_peer_id(target_pk) != target_peer_id:
                 raise ValueError("Target peer identifier does not match the supplied identity key")
-            self._known_pks[target_peer_id] = target_pk
+            if target_peer_id in self._known_pks or len(self._known_pks) < MAX_KNOWN_PUBLIC_KEYS:
+                self._known_pks[target_peer_id] = target_pk
 
         if not force_relay:
             if target_peer_id in self._peers:
@@ -990,7 +998,8 @@ class PQP2PNode:
                 else:
                     self._e2ee_sessions[origin] = resp_session
 
-                self._known_pks[origin] = sender_id_pk
+                if origin in self._known_pks or len(self._known_pks) < MAX_KNOWN_PUBLIC_KEYS:
+                    self._known_pks[origin] = sender_id_pk
 
                 try:
                     dispatched = await self._send_relayed(
