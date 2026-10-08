@@ -22,6 +22,10 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
 
+# Process-local registry of ephemeral TLS directories created by this runtime
+_ACTIVE_EPHEMERAL_DIRS: set[str] = set()
+
+
 def generate_ephemeral_tls_cert(host: str = "127.0.0.1", additional_hosts: list[str] = None) -> Tuple[str, str, str]:
     """
     Generates an ephemeral Ed25519 self-signed TLS certificate
@@ -68,6 +72,9 @@ def generate_ephemeral_tls_cert(host: str = "127.0.0.1", additional_hosts: list[
     )
 
     temp_dir = tempfile.mkdtemp(prefix="pq_ratchet_tls_")
+    real_temp_dir = os.path.realpath(temp_dir)
+    _ACTIVE_EPHEMERAL_DIRS.add(real_temp_dir)
+
     cert_path = os.path.join(temp_dir, "cert.pem")
     key_path = os.path.join(temp_dir, "key.pem")
 
@@ -89,11 +96,12 @@ def cleanup_ephemeral_tls(temp_dir: str) -> None:
     Performs best-effort destruction of ephemeral TLS key material on disk.
     Overwrites the existing key file in-place with random bytes before directory unlinking.
 
-    SECURITY INVARIANT (API Footgun Mitigation):
-    Strictly verifies that the target directory was created by this module:
+    SECURITY INVARIANT (Process Provenance & API Footgun Mitigation):
+    Strictly verifies that the target directory was created by this module AND this process:
     1. Basename must begin with the expected module prefix ('pq_ratchet_tls_').
     2. Real path must reside within the system temporary directory.
-    Rejects any unverified, arbitrary, or root directory paths by raising ValueError.
+    3. Directory must be registered in the process-local registry (_ACTIVE_EPHEMERAL_DIRS).
+    Rejects any unverified, arbitrary, or externally created directory paths by raising ValueError.
 
     LIMITATION (Best-Effort Cleanup):
     Modern SSD Flash Translation Layers (FTL wear-leveling), copy-on-write filesystems
@@ -126,6 +134,12 @@ def cleanup_ephemeral_tls(temp_dir: str) -> None:
             f"Security Violation: Refusing to delete directory outside system temporary folder: '{temp_dir}'"
         )
 
+    # Guard 3: Verify directory was explicitly created by this process runtime
+    if real_path not in _ACTIVE_EPHEMERAL_DIRS:
+        raise ValueError(
+            f"Security Violation: Refusing to delete directory not registered as created by this process: '{temp_dir}'"
+        )
+
     key_path = os.path.join(real_path, "key.pem")
     if os.path.isfile(key_path):
         try:
@@ -141,3 +155,4 @@ def cleanup_ephemeral_tls(temp_dir: str) -> None:
 
     import shutil
     shutil.rmtree(real_path, ignore_errors=False)
+    _ACTIVE_EPHEMERAL_DIRS.discard(real_path)

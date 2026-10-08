@@ -338,6 +338,15 @@ class TestEphemeralWebPQRatchet(unittest.TestCase):
         with self.assertRaises(ValueError):
             cleanup_ephemeral_tls(tempfile.gettempdir())
 
+        # Test 3: Unrelated directory with matching prefix not created by this runtime process
+        unregistered_temp = tempfile.mkdtemp(prefix="pq_ratchet_tls_unregistered_")
+        try:
+            with self.assertRaises(ValueError):
+                cleanup_ephemeral_tls(unregistered_temp)
+            self.assertTrue(os.path.isdir(unregistered_temp))
+        finally:
+            shutil.rmtree(unregistered_temp, ignore_errors=True)
+
     def test_index_html_contains_subresource_integrity_attributes(self):
         """
         P1 Remediation Verification:
@@ -386,16 +395,20 @@ class TestEphemeralWebPQRatchet(unittest.TestCase):
     def test_wildcard_tls_requires_tls_host(self):
         """
         P2 Remediation Verification:
-        Binding to 0.0.0.0 or :: with --tls requires --tls-host to avoid SAN mismatch.
+        Binding to any wildcard representation (0.0.0.0, ::, ::0, [::0], 0:0:0:0:0:0:0:0)
+        with --tls requires --tls-host to avoid SAN mismatch.
         """
         import sys
         import subprocess
 
-        cmd = [sys.executable, "-m", "pq_ratchet.cli", "web", "--host", "0.0.0.0", "--tls"]
-        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        self.assertEqual(proc.returncode, 1)
-        self.assertIn("CERTIFICATE SAN MISMATCH", proc.stdout)
-        self.assertIn("--tls-host", proc.stdout)
+        wildcard_variations = ["0.0.0.0", "::", "::0", "[::0]", "0:0:0:0:0:0:0:0"]
+        for wc in wildcard_variations:
+            with self.subTest(wildcard=wc):
+                cmd = [sys.executable, "-m", "pq_ratchet.cli", "web", "--host", wc, "--tls"]
+                proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                self.assertEqual(proc.returncode, 1)
+                self.assertIn("CERTIFICATE SAN MISMATCH", proc.stdout)
+                self.assertIn("--tls-host", proc.stdout)
 
     def test_cors_and_corp_headers_for_standalone_clients(self):
         """Verifies CORS and CORP headers permit cross-origin directory fetching from file:// and external origins."""

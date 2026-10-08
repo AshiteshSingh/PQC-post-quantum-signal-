@@ -110,6 +110,23 @@ def is_loopback_host(host: str) -> bool:
         return False
 
 
+def is_wildcard_host(host: str) -> bool:
+    """
+    Determines whether the specified network host is an unroutable wildcard (unspecified) address.
+    Parses IPv4 and IPv6 representations (e.g. '0.0.0.0', '::', '::0', '0:0:0:0:0:0:0:0', '[::]', '[::0]').
+    """
+    if not host:
+        return False
+    cleaned = host.strip().lower()
+    if cleaned.startswith("[") and cleaned.endswith("]"):
+        cleaned = cleaned[1:-1]
+    try:
+        ip = ipaddress.ip_address(cleaned)
+        return ip.is_unspecified
+    except ValueError:
+        return False
+
+
 def parse_bootstrap_endpoint(entry: str) -> Tuple[str, int, Optional[str]]:
     """
     Parses a bootstrap node specifier into (host, port, Optional[key_path]).
@@ -639,10 +656,9 @@ def main():
             )
             sys.exit(1)
 
-        # Wildcard addresses (0.0.0.0, ::) are unroutable; the generated certificate
+        # Wildcard addresses (0.0.0.0, ::, ::0, etc.) are unroutable; the generated certificate
         # must contain the actual hostname/IP that remote clients will connect to.
-        _wildcard_binds = {"0.0.0.0", "::"}
-        if args.tls and (not ssl_keyfile or not ssl_certfile) and args.host in _wildcard_binds and not args.tls_host:
+        if args.tls and (not ssl_keyfile or not ssl_certfile) and is_wildcard_host(args.host) and not args.tls_host:
             print(
                 f"\n[!] CERTIFICATE SAN MISMATCH: --host '{args.host}' is a wildcard address that remote clients "
                 f"never connect to directly. The generated TLS certificate must contain the hostname or IP "
@@ -655,7 +671,8 @@ def main():
         ephemeral_tls_dir = None
         if args.tls and (not ssl_keyfile or not ssl_certfile):
             from pq_ratchet.web.tls import generate_ephemeral_tls_cert
-            cert_p, key_p, ephemeral_tls_dir = generate_ephemeral_tls_cert(args.host if args.host not in _wildcard_binds else "127.0.0.1", additional_hosts=args.tls_host)
+            primary_tls_host = "127.0.0.1" if is_wildcard_host(args.host) else args.host
+            cert_p, key_p, ephemeral_tls_dir = generate_ephemeral_tls_cert(primary_tls_host, additional_hosts=args.tls_host)
             ssl_certfile = cert_p
             ssl_keyfile = key_p
             print("[+] Generated ephemeral self-signed TLS certificate (Classical Ed25519; development/local only).")
