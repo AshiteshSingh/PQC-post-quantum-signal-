@@ -60,6 +60,7 @@ export const DOMAIN_AUTH_RESPONDER = new TextEncoder().encode("PQ-RATCHET-AUTH-R
 export const MAX_SKIPPED_KEYS_CACHE = 1000;
 export const MAX_RATCHET_SKIP_GAP = 1000;
 export const MAX_PACKET_PAYLOAD_BYTES = 16 * 1024 * 1024;
+export const MAX_RATCHET_COUNTER = 0xFFFFFFFF;
 
 export function computeInitiatorTranscript(version, initiatorIdPK, responderIdPK, initiatorEphemKEMPK) {
   return concatBytes(
@@ -880,37 +881,64 @@ export class PQRatchetSession {
 
   ratchetEncrypt(plaintextBytes) {
     this._ensureOpen();
-    if (plaintextBytes.length > MAX_PACKET_PAYLOAD_BYTES) {
-      throw new Error("Plaintext exceeds maximum bound");
+    if (!(plaintextBytes instanceof Uint8Array)) {
+      throw new TypeError("Ratchet plaintext must be a Uint8Array");
     }
     if (!this.sendingChainKey) {
       throw new Error("Sending chain key not initialized");
     }
+    const packetOverhead = 15 + 4 + AEAD_TAG_BYTES
+      + (this._pendingKemCt ? this._pendingKemCt.length : 0)
+      + (this._pendingNextKemPk ? this._pendingNextKemPk.length : 0);
+    if (plaintextBytes.length + packetOverhead > MAX_PACKET_PAYLOAD_BYTES) {
+      throw new Error("Ratchet packet exceeds maximum bound");
+    }
+    if (
+      !Number.isSafeInteger(this.epoch)
+      || this.epoch < 0
+      || this.epoch > MAX_RATCHET_COUNTER
+      || !Number.isSafeInteger(this.sendingSeq)
+      || this.sendingSeq < 0
+      || this.sendingSeq > MAX_RATCHET_COUNTER
+    ) {
+      throw new Error("Ratchet epoch or sequence counter is exhausted");
+    }
 
-    // Step symmetric chain forward
+    // Draft the next chain and packet. Keep live state and queued KEM fields
+    // unchanged until encryption and serialization both complete.
     const [nextChain, messageKey] = symmetric_chain_step(this.sendingChainKey);
-    zeroize(this.sendingChainKey);
-    this.sendingChainKey = nextChain;
-
     const seq = this.sendingSeq;
     const epoch = this.epoch;
-    this.sendingSeq += 1;
-
     const kemCt = this._pendingKemCt;
     const nextKemPk = this._pendingNextKemPk;
+    let serializedPacket;
+    try {
+      const prelimPacket = new RatchetDataPacket(epoch, seq, kemCt, nextKemPk, new Uint8Array(0));
+      const ad = prelimPacket.getAssociatedData();
+      const nonce = RatchetDataPacket.deriveNonce(epoch, seq);
+      const cipher = chacha20poly1305(messageKey, nonce, ad);
+      const ciphertext = cipher.encrypt(plaintextBytes);
+      const packet = new RatchetDataPacket(epoch, seq, kemCt, nextKemPk, ciphertext);
+      serializedPacket = packet.serialize();
+    } catch (error) {
+      zeroize(nextChain);
+      throw error;
+    } finally {
+      zeroize(messageKey);
+    }
+
+    const previousSendingChain = this.sendingChainKey;
+    this.sendingChainKey = nextChain;
+    this.sendingSeq = seq + 1;
     this._pendingKemCt = null;
     this._pendingNextKemPk = null;
-
-    const prelimPacket = new RatchetDataPacket(epoch, seq, kemCt, nextKemPk, new Uint8Array(0));
-    const ad = prelimPacket.getAssociatedData();
-    const nonce = RatchetDataPacket.deriveNonce(epoch, seq);
-
-    const cipher = chacha20poly1305(messageKey, nonce, ad);
-    const ciphertext = cipher.encrypt(plaintextBytes);
-    zeroize(messageKey);
-
-    const packet = new RatchetDataPacket(epoch, seq, kemCt, nextKemPk, ciphertext);
-    return packet.serialize();
+    try {
+      zeroize(previousSendingChain);
+    } catch (error) {
+      // Packet construction succeeded and state is committed. Cleanup failure
+      // must not suppress the packet and leave the peer on the prior chain.
+    }
+    return serializedPacket;
   }
 
   ratchetDecrypt(packetBytes) {

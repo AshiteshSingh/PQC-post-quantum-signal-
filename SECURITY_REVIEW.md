@@ -82,13 +82,13 @@ The browser build source now treats session close as idempotent, zeroizes sessio
 
 **Required before production:** Rebuild the browser assets and sign them with the authorized release key. Keep session teardown ownership limited to session keys, and retain explicit logout/lock behavior that zeroizes and then reloads or drops the app-owned identity object.
 
-### P2 — The signed browser ratchet still commits outbound state before encryption and serialization succeed
+### P2 — The signed browser bundle still commits outbound state before encryption and serialization succeed
 
-The native Python source now drafts the next sending chain and commits the chain, sequence, and pending KEM fields only after AEAD encryption and packet serialization succeed ([ratchet.py](pq_ratchet/core/ratchet.py#L417-L462)). This change was inspected but not exercised. The browser source and signed bundle still advance the chain, increment the sequence, and clear pending KEM fields before AEAD encryption and serialization complete ([pqc-engine.js](web_builder/src/pqc-engine.js#L881-L904), [pq-crypto.bundle.js](pq_ratchet/web/static/pq-crypto.bundle.js#L5444-L5472)). The browser caller catches encryption errors and displays a toast, then leaves the ratchet session active ([app.js](pq_ratchet/web/static/app.js#L448-L478)).
+The native Python source drafts the next chain and commits only after successful encryption and serialization ([ratchet.py](pq_ratchet/core/ratchet.py#L417-L462)). The browser build source now follows the same draft/commit pattern, checks complete wire size and 32-bit counters, and wipes the draft chain on local failure ([pqc-engine.js](web_builder/src/pqc-engine.js#L882-L946)). These source changes were inspected but not exercised. The signed browser bundle remains unchanged and still advances the chain and clears pending KEM fields before encryption and serialization complete ([pq-crypto.bundle.js](pq_ratchet/web/static/pq-crypto.bundle.js#L5444-L5472)). The browser caller catches encryption errors and displays a toast, then leaves the ratchet session active ([app.js](pq_ratchet/web/static/app.js#L448-L478)).
 
-**Impact:** In the browser, if an AEAD backend, allocation, or serialization operation throws after the state advance, the caller receives no packet but the next send uses a later key/sequence; a pending KEM transition may also be lost. This is a state-integrity and availability defect, not evidence of plaintext recovery.
+**Impact:** In the currently signed browser bundle, if an AEAD backend, allocation, or serialization operation throws after the state advance, the caller receives no packet but the next send uses a later key/sequence; a pending KEM transition may also be lost. This is a state-integrity and availability defect, not evidence of plaintext recovery.
 
-**Required before production:** Apply the same draft/commit behavior to the browser source, rebuild the bundle, and sign it with the authorized release key. If transport dispatch is uncertain after commit, close that session and establish a fresh one, or add an authenticated delivery/recovery protocol.
+**Required before production:** Rebuild the browser bundle from the corrected source and sign it with the authorized release key. If transport dispatch is uncertain after commit, close that session and establish a fresh one, or add an authenticated delivery/recovery protocol.
 
 ### Confirmed control and remaining limit — relay KEM work is bounded in Python, not equivalently in the browser
 
@@ -101,6 +101,10 @@ The current Python ratchet and P2P relay peer tracker cap failed KEM transitions
 ## Review conclusion
 
 The production decision remains **not approved**. The review confirms some meaningful hardening in framing, identity pinning, browser-asset verification, transactional receive handling, and Python KEM-work limits. Those controls do not establish the custom hybrid combiner or ratchet's security, and they do not make the browser and Python implementations one proven protocol. The current code is still an experimental custom cryptographic protocol and needs an independent protocol/implementation audit plus the release gates below before production use.
+
+### Browser release candidate status
+
+The corrected browser build source has been rebuilt into `web_builder/dist/release-candidate`. The candidate bundle, updated SRI in `index.html`, and refreshed `manifest.json` are prepared, but `manifest.sig` is intentionally absent because the authorized release private key is not available in this workspace. **Do not serve or deploy this candidate.** The currently checked-in static release was separately verified against its existing ML-DSA signature and asset digests; that proves only integrity of the old assets, not their security. No tests or runtime checks were run.
 
 ## Release gates
 
