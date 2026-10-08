@@ -56,10 +56,14 @@ class SessionState:
         Stores out-of-order message key with LRU bounded eviction.
         Invariant: Cache size <= MAX_SKIPPED_KEYS_CACHE (DoS mitigation).
         """
-        if len(self.skipped_keys) >= MAX_SKIPPED_KEYS_CACHE:
+        cache_key = (epoch, seq)
+        replaced_key = self.skipped_keys.pop(cache_key, None)
+        if replaced_key is not None:
+            zeroize(replaced_key)
+        elif len(self.skipped_keys) >= MAX_SKIPPED_KEYS_CACHE:
             _, oldest_key = self.skipped_keys.popitem(last=False)
             zeroize(oldest_key)
-        self.skipped_keys[(epoch, seq)] = bytearray(message_key)
+        self.skipped_keys[cache_key] = bytearray(message_key)
 
     def retrieve_skipped_key(self, epoch: int, seq: int) -> Optional[bytes]:
         """
