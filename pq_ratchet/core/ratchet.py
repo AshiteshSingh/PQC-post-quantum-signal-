@@ -443,6 +443,8 @@ class PQRatchetSession:
             raise ValueError(
                 f"Packet sequence gap {early_gap} exceeds maximum permissible skip limit ({MAX_RATCHET_SKIP_GAP})"
             )
+        if packet.kem_ct is not None and packet.seq != 0:
+            raise ValueError("KEM ratchet transitions must begin at sequence zero")
 
         # Case 2: Asymmetric Ratchet step present
         
