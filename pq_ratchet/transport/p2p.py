@@ -100,19 +100,39 @@ class P2PMessageEnvelope:
     TYPE_E2EE_HANDSHAKE_INIT = 0x04
     TYPE_E2EE_HANDSHAKE_RESP = 0x05
     TYPE_E2EE_RATCHET_DATA = 0x06
+    VALID_TYPES = frozenset({
+        TYPE_PEER_EXCHANGE,
+        TYPE_CHAT_DATA,
+        TYPE_BLIND_RELAY,
+        TYPE_E2EE_HANDSHAKE_INIT,
+        TYPE_E2EE_HANDSHAKE_RESP,
+        TYPE_E2EE_RATCHET_DATA,
+    })
 
     @staticmethod
     def pack(msg_type: int, payload: bytes) -> bytes:
+        if type(msg_type) is not int or msg_type not in P2PMessageEnvelope.VALID_TYPES:
+            raise ValueError("Unsupported P2P envelope message type")
+        if not isinstance(payload, bytes):
+            raise TypeError("P2P envelope payload must be bytes")
+        if len(payload) > MAX_PACKET_PAYLOAD_BYTES - 5:
+            raise ValueError("P2P envelope payload exceeds the maximum frame size")
         return struct.pack("!BI", msg_type, len(payload)) + payload
 
     @staticmethod
     def unpack(data: bytes) -> Tuple[int, bytes]:
+        if not isinstance(data, bytes):
+            raise TypeError("P2P envelope must be bytes")
         if len(data) < 5:
             raise ValueError("Data too short for P2P envelope header")
+        if len(data) > MAX_PACKET_PAYLOAD_BYTES:
+            raise ValueError("P2P envelope exceeds the maximum frame size")
         msg_type, length = struct.unpack("!BI", data[:5])
+        if msg_type not in P2PMessageEnvelope.VALID_TYPES:
+            raise ValueError("Unsupported P2P envelope message type")
+        if length != len(data) - 5:
+            raise ValueError("P2P envelope length does not match the frame size")
         payload = data[5:5 + length]
-        if len(payload) != length:
-            raise ValueError(f"Truncated P2P envelope: expected {length}, got {len(payload)}")
         return msg_type, payload
 
 
