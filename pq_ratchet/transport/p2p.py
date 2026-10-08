@@ -39,6 +39,8 @@ MAX_ACTIVE_PEERS = 256
 MAX_KNOWN_ADDRESSES = 512
 MAX_PEER_EXCHANGE_ENTRIES = 256
 MAX_PENDING_E2EE_INITS = 64
+MAX_ACTIVE_E2EE_SESSIONS = 256
+MAX_STAGED_E2EE_SESSIONS = 64
 PEER_ID_PATTERN = re.compile(r"^pqc_[0-9a-f]{32}$")
 HOSTNAME_PATTERN = re.compile(
     r"^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)"
@@ -291,6 +293,18 @@ class PQP2PNode:
         finally:
             event.set()
         return True
+
+    def _discard_e2ee_candidate(self, peer_id: str, candidate: PQRatchetSession) -> bool:
+        """Remove and close a candidate only if it is still mapped for this peer."""
+        if self._e2ee_sessions.get(peer_id) is candidate:
+            self._e2ee_sessions.pop(peer_id, None)
+            candidate.close()
+            return True
+        if self._staged_e2ee_sessions.get(peer_id) is candidate:
+            self._staged_e2ee_sessions.pop(peer_id, None)
+            candidate.close()
+            return True
+        return False
 
     async def connect_peer(
         self,
@@ -580,6 +594,11 @@ class PQP2PNode:
                     return False
                 e2ee_session = self._e2ee_sessions.get(target_peer_id)
             else:
+                if (
+                    target_peer_id not in self._e2ee_sessions
+                    and len(self._e2ee_sessions) >= MAX_ACTIVE_E2EE_SESSIONS
+                ):
+                    return False
                 if len(self._pending_e2ee_inits) >= MAX_PENDING_E2EE_INITS:
                     return False
                 session_candidate, init_bytes = PQRatchetSession.initiate_handshake(
@@ -933,6 +952,15 @@ class PQP2PNode:
                 if init_fp in self._seen_handshake_inits:
                     return
 
+                if origin in self._e2ee_sessions:
+                    if (
+                        origin not in self._staged_e2ee_sessions
+                        and len(self._staged_e2ee_sessions) >= MAX_STAGED_E2EE_SESSIONS
+                    ):
+                        return
+                elif len(self._e2ee_sessions) >= MAX_ACTIVE_E2EE_SESSIONS:
+                    return
+
                 if origin in self._pending_e2ee_inits:
                     if self.peer_id < origin:
                         return
@@ -955,19 +983,26 @@ class PQP2PNode:
                 # Stage a replacement until confirmation so an unauthenticated or
                 # incomplete handshake does not immediately replace the active session.
                 if origin in self._e2ee_sessions:
-                    if origin in self._staged_e2ee_sessions:
-                        self._staged_e2ee_sessions[origin].close()
+                    old_staged = self._staged_e2ee_sessions.get(origin)
+                    if old_staged is not None:
+                        self._discard_e2ee_candidate(origin, old_staged)
                     self._staged_e2ee_sessions[origin] = resp_session
                 else:
                     self._e2ee_sessions[origin] = resp_session
 
                 self._known_pks[origin] = sender_id_pk
 
-                await self._send_relayed(
-                    target_peer_id=origin,
-                    e2ee_payload=resp_bytes,
-                    msg_type=P2PMessageEnvelope.TYPE_E2EE_HANDSHAKE_RESP,
-                )
+                try:
+                    dispatched = await self._send_relayed(
+                        target_peer_id=origin,
+                        e2ee_payload=resp_bytes,
+                        msg_type=P2PMessageEnvelope.TYPE_E2EE_HANDSHAKE_RESP,
+                    )
+                except BaseException:
+                    self._discard_e2ee_candidate(origin, resp_session)
+                    raise
+                if not dispatched:
+                    self._discard_e2ee_candidate(origin, resp_session)
             except Exception:
                 pass
             return
@@ -984,6 +1019,13 @@ class PQP2PNode:
             # An adversarial relay injecting malformed or forged responses must be silently dropped,
             # keeping candidate session and pending initialization intact for authentic response arrival.
             if not candidate_session.validate_handshake_response(raw_payload):
+                return
+
+            if (
+                origin not in self._e2ee_sessions
+                and len(self._e2ee_sessions) >= MAX_ACTIVE_E2EE_SESSIONS
+            ):
+                self._abort_pending_e2ee_init(origin, candidate_session)
                 return
 
             # Cryptographic authenticity verified: Evict pending init and complete handshake
@@ -1016,6 +1058,12 @@ class PQP2PNode:
                 try:
                     plaintext = staged_session.ratchet_decrypt(raw_payload)
                     # Promotion: Staged session successfully authenticated inbound frame
+                    if (
+                        active_session is None
+                        and len(self._e2ee_sessions) >= MAX_ACTIVE_E2EE_SESSIONS
+                    ):
+                        self._discard_e2ee_candidate(origin, staged_session)
+                        return
                     if active_session is not None:
                         active_session.close()
                     self._e2ee_sessions[origin] = staged_session
