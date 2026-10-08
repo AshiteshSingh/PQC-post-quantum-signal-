@@ -29,8 +29,18 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 
 from pq_ratchet.primitives.identity import IdentityPrivateKey, IdentityPublicKey
 from pq_ratchet.core.ratchet import PQRatchetSession
-from pq_ratchet.core.framing import RatchetDataPacket
-from pq_ratchet.constants import AEAD_TAG_BYTES, MAX_RATCHET_COUNTER
+from pq_ratchet.core.framing import (
+    HandshakeInitPacket,
+    HandshakeRespPacket,
+    RatchetDataPacket,
+)
+from pq_ratchet.constants import (
+    AEAD_TAG_BYTES,
+    MAX_RATCHET_COUNTER,
+    MSG_TYPE_HANDSHAKE_INIT,
+    MSG_TYPE_HANDSHAKE_RESP,
+    MSG_TYPE_RATCHET_DATA,
+)
 
 SESSION_TTL_SECONDS = 3600  # Strict 1-Hour Ephemeral Lifetime
 MAX_CONCURRENT_USERS = 256  # Hard memory allocation ceiling
@@ -746,18 +756,28 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                     continue
 
                 try:
-                    ratchet_packet = RatchetDataPacket.deserialize(packet_bytes)
-                    if len(ratchet_packet.ciphertext) < AEAD_TAG_BYTES:
-                        raise ValueError("Ratchet ciphertext is shorter than its authentication tag")
-                    if (ratchet_packet.kem_ct is None) != (ratchet_packet.next_kem_pk is None):
-                        raise ValueError("KEM ciphertext and next public key must appear together")
-                    if ratchet_packet.kem_ct is not None:
-                        if ratchet_packet.seq != 0:
-                            raise ValueError("KEM transitions must start at sequence zero")
-                        if ratchet_packet.epoch == MAX_RATCHET_COUNTER:
-                            raise ValueError("KEM transition would overflow the epoch counter")
+                    if len(packet_bytes) < 6:
+                        raise ValueError("Relay frame is shorter than its protocol header")
+                    message_type = packet_bytes[5]
+                    if message_type == MSG_TYPE_HANDSHAKE_INIT:
+                        HandshakeInitPacket.deserialize(packet_bytes)
+                    elif message_type == MSG_TYPE_HANDSHAKE_RESP:
+                        HandshakeRespPacket.deserialize(packet_bytes)
+                    elif message_type == MSG_TYPE_RATCHET_DATA:
+                        ratchet_packet = RatchetDataPacket.deserialize(packet_bytes)
+                        if len(ratchet_packet.ciphertext) < AEAD_TAG_BYTES:
+                            raise ValueError("Ratchet ciphertext is shorter than its authentication tag")
+                        if (ratchet_packet.kem_ct is None) != (ratchet_packet.next_kem_pk is None):
+                            raise ValueError("KEM ciphertext and next public key must appear together")
+                        if ratchet_packet.kem_ct is not None:
+                            if ratchet_packet.seq != 0:
+                                raise ValueError("KEM transitions must start at sequence zero")
+                            if ratchet_packet.epoch == MAX_RATCHET_COUNTER:
+                                raise ValueError("KEM transition would overflow the epoch counter")
+                    else:
+                        raise ValueError("Unsupported relay frame type")
                 except Exception:
-                    await safe_send_json(websocket, {"type": "error", "message": "Invalid ratchet packet"})
+                    await safe_send_json(websocket, {"type": "error", "message": "Invalid protocol packet"})
                     continue
 
                 target_sess = online_users.get(target_username)

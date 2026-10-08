@@ -92,7 +92,7 @@ The native Python source drafts the next chain and commits only after successful
 
 ### Confirmed control and remaining limit — relay KEM work is bounded in Python, not equivalently in the browser
 
-The current Python ratchet and P2P relay peer tracker cap failed KEM transitions, including across active/staged candidates and session replacement ([ratchet.py](pq_ratchet/core/ratchet.py#L100-L118), [p2p.py](pq_ratchet/transport/p2p.py#L296-L335), [p2p.py](pq_ratchet/transport/p2p.py#L1131-L1152)). The web relay now checks ratchet framing, tag length, KEM-field pairing, transition sequence zero, and epoch overflow before forwarding ([app.py](pq_ratchet/web/app.py#L747-L760)). It does not authenticate/decrypt the packet and cannot protect a browser from a malicious relay that bypasses those checks. The browser still performs KEM decapsulation and may generate/encapsulate fresh keys before AEAD verification and before checking the sequence gap ([pqc-engine.js](web_builder/src/pqc-engine.js#L941-L983)). The relay's general per-connection limit of 25 requests per second is a coarse cap, not a client-side cryptographic-work budget ([app.py](pq_ratchet/web/app.py#L591-L599)).
+The current Python ratchet and P2P relay peer tracker cap failed KEM transitions, including across active/staged candidates and session replacement ([ratchet.py](pq_ratchet/core/ratchet.py#L100-L118), [p2p.py](pq_ratchet/transport/p2p.py#L296-L335), [p2p.py](pq_ratchet/transport/p2p.py#L1131-L1152)). The web relay structurally parses handshake-init, handshake-response, and ratchet-data frames; for ratchet data it also checks tag length, KEM-field pairing, transition sequence zero, and epoch overflow before forwarding ([app.py](pq_ratchet/web/app.py#L756-L786)). It does not authenticate/decrypt the packet and cannot protect a browser from a malicious relay that bypasses those checks. The browser still performs KEM decapsulation and may generate/encapsulate fresh keys before AEAD verification and before checking the sequence gap ([pqc-engine.js](web_builder/src/pqc-engine.js#L941-L983)). The relay's general per-connection limit of 25 requests per second is a coarse cap, not a client-side cryptographic-work budget ([app.py](pq_ratchet/web/app.py#L591-L599)).
 
 **Impact:** A peer able to deliver forged transition packets can cause repeated expensive browser work up to the relay's general traffic limit. This is a resource-exhaustion and cross-client parity concern; the source alone does not establish that confidentiality is broken.
 
@@ -104,7 +104,22 @@ The production decision remains **not approved**. The review confirms some meani
 
 ### Browser release candidate status
 
-The corrected browser build source has been rebuilt into `web_builder/dist/release-candidate`. The candidate bundle, updated SRI in `index.html`, and refreshed `manifest.json` are prepared, but `manifest.sig` is intentionally absent because the authorized release private key is not available in this workspace. **Do not serve or deploy this candidate.** The currently checked-in static release was separately verified against its existing ML-DSA signature and asset digests; that proves only integrity of the old assets, not their security. No tests or runtime checks were run.
+The corrected browser build source has been rebuilt into `web_builder/dist/release-candidate`. For local integrity testing only, its exact `manifest.json` bytes were signed with a newly generated ephemeral ML-DSA test key; the private key was not saved. The candidate copy of `release_key.pub` is not the repository's pinned release key. **Do not serve or deploy this candidate.** The currently checked-in static release was separately verified against its existing ML-DSA signature and asset digests; that proves only integrity of the old assets, not their security.
+
+### Verification follow-up (2026-10-08)
+
+After the source-only review above, verification was run on the current working tree:
+
+- `python -m pytest -vv`: 58 passed, including 5 subtests. Pytest reported one Starlette deprecation warning about its `httpx` TestClient integration.
+- `npm test` in `web_builder`: browser ratchet/KDF tests and Python/JavaScript ML-KEM and ML-DSA interoperability checks passed.
+- `python -m compileall -q pq_ratchet tests`: passed.
+- `python -m pq_ratchet.web.verify_bundle --require-sig`: the checked-in static release signature and all declared asset hashes/SRI values verified.
+- `npm audit --omit=dev` in `web_builder`: zero reported vulnerabilities.
+- `python -m pip check` reported an environment-level conflict: installed `moviepy 2.2.1` requires `pillow<12`, while the shared Python environment has Pillow 12.3.0. This is unrelated to the project's declared cryptography dependency, but means the shared environment is not globally dependency-consistent.
+- The local release candidate's test-key signature and asset hashes/SRI values verified when the ephemeral public key was explicitly supplied as the trust key. This is an integrity test only and does not authenticate the candidate for release.
+- ProVerif was unavailable in the environment, so the model was not run. Fuzzing, adversarial load tests, reproducible-build checks, and independent cryptographic review remain outstanding.
+
+The integration tests exposed that an earlier relay validation change rejected the two handshake frame types required by the browser protocol. Relay validation now structurally parses both handshake frames and ratchet-data frames, and the full web E2EE test exercises the handshake and message relay. This verifies framing compatibility, not the custom protocol's cryptographic security.
 
 ## Release gates
 

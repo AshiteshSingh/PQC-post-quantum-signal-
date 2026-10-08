@@ -20,7 +20,11 @@ class TestWebClientSideE2EE(unittest.TestCase):
 
     def setUp(self):
         self.client = TestClient(app)
+        self.client.__enter__()
         online_users.clear()
+
+    def tearDown(self):
+        self.client.__exit__(None, None, None)
 
     def test_blind_relay_e2ee_handshake_and_messaging(self):
         # 1. Clients generate their ML-DSA-65 identities locally

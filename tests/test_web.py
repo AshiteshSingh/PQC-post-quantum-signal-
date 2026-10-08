@@ -13,6 +13,7 @@ import json
 import base64
 from fastapi.testclient import TestClient
 from pq_ratchet.primitives.identity import IdentityPrivateKey
+from pq_ratchet.core.framing import RatchetDataPacket
 from pq_ratchet.web.app import (
     app,
     online_users,
@@ -28,7 +29,11 @@ class TestEphemeralWebPQRatchet(unittest.TestCase):
 
     def setUp(self):
         self.client = TestClient(app)
+        self.client.__enter__()
         online_users.clear()
+
+    def tearDown(self):
+        self.client.__exit__(None, None, None)
 
     def test_zero_trace_headers_and_online_api(self):
         resp = self.client.get("/")
@@ -83,11 +88,27 @@ class TestEphemeralWebPQRatchet(unittest.TestCase):
                     "target": "Bob",
                     "packet": "T1BBUVVFX0NBQ0hFX1BBQ0tFVA==",
                 }))
+                invalid_relay = json.loads(ws_alice.receive_text())
+                self.assertEqual(invalid_relay["type"], "error")
+                self.assertEqual(invalid_relay["message"], "Invalid protocol packet")
+
+                valid_packet = RatchetDataPacket(
+                    epoch=0,
+                    seq=0,
+                    kem_ct=None,
+                    next_kem_pk=None,
+                    ciphertext=bytes(16),
+                ).serialize()
+                ws_alice.send_text(json.dumps({
+                    "action": "relay_packet",
+                    "target": "Bob",
+                    "packet": base64.b64encode(valid_packet).decode("ascii"),
+                }))
 
                 msg_b = json.loads(ws_bob.receive_text())
                 self.assertEqual(msg_b["type"], "relayed_packet")
                 self.assertEqual(msg_b["from"], "Alice")
-                self.assertEqual(msg_b["packet"], "T1BBUVVFX0NBQ0hFX1BBQ0tFVA==")
+                self.assertEqual(msg_b["packet"], base64.b64encode(valid_packet).decode("ascii"))
 
                 # Bob clicks "Clear Chat for Both"
                 ws_bob.send_text(json.dumps({
@@ -420,22 +441,41 @@ class TestEphemeralWebPQRatchet(unittest.TestCase):
                 self.assertIn("--tls-host", proc.stdout)
 
     def test_cors_and_corp_headers_for_standalone_clients(self):
-        """Verifies CORS and CORP headers permit cross-origin directory fetching from file:// and external origins."""
-        # GET request with opaque origin
+        """Verifies opaque origins are denied and configured web origins are narrowly allowed."""
+        # Opaque origins are denied by default.
         resp = self.client.get("/api/online-users", headers={"origin": "null"})
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.headers.get("access-control-allow-origin"), "*")
-        self.assertEqual(resp.headers.get("cross-origin-resource-policy"), "cross-origin")
+        self.assertIsNone(resp.headers.get("access-control-allow-origin"))
+        self.assertEqual(resp.headers.get("cross-origin-resource-policy"), "same-origin")
 
-        # OPTIONS preflight
+        # Opaque-origin preflight is denied.
         preflight = self.client.options(
             "/api/online-users",
             headers={"origin": "null", "access-control-request-method": "GET"},
         )
-        self.assertEqual(preflight.status_code, 200)
-        self.assertEqual(preflight.headers.get("access-control-allow-origin"), "*")
-        self.assertEqual(preflight.headers.get("cross-origin-resource-policy"), "cross-origin")
-        self.assertIn("GET", preflight.headers.get("access-control-allow-methods", ""))
+        self.assertEqual(preflight.status_code, 403)
+        self.assertIsNone(preflight.headers.get("access-control-allow-origin"))
+
+        # An administrator-configured exact origin receives narrowly scoped CORS.
+        from unittest.mock import patch
+        from importlib import import_module
+        web_app = import_module("pq_ratchet.web.app")
+        allowed_origin = "https://client.example"
+        with patch.object(web_app, "_ALLOWED_WEB_ORIGINS", frozenset({allowed_origin})):
+            allowed = self.client.get("/api/online-users", headers={"origin": allowed_origin})
+            self.assertEqual(allowed.status_code, 200)
+            self.assertEqual(allowed.headers.get("access-control-allow-origin"), allowed_origin)
+            self.assertEqual(allowed.headers.get("cross-origin-resource-policy"), "cross-origin")
+            self.assertIn("origin", allowed.headers.get("vary", "").lower())
+
+            allowed_preflight = self.client.options(
+                "/api/online-users",
+                headers={"origin": allowed_origin, "access-control-request-method": "GET"},
+            )
+        self.assertEqual(allowed_preflight.status_code, 200)
+        self.assertEqual(allowed_preflight.headers.get("access-control-allow-origin"), allowed_origin)
+        self.assertEqual(allowed_preflight.headers.get("cross-origin-resource-policy"), "cross-origin")
+        self.assertIn("GET", allowed_preflight.headers.get("access-control-allow-methods", ""))
 
 
     def test_payload_ceiling(self):
@@ -470,15 +510,27 @@ class TestEphemeralWebPQRatchet(unittest.TestCase):
             self.assertEqual(err2["type"], "error")
 
     def test_peer_disconnection_notification(self):
+        peer_a_identity = IdentityPrivateKey.generate()
+        peer_b_identity = IdentityPrivateKey.generate()
         with self.client.websocket_connect("/ws/PeerA") as ws_a:
             json.loads(ws_a.receive_text())
+            ws_a.send_text(json.dumps({
+                "action": "register",
+                "identity_pk": base64.b64encode(peer_a_identity.public_key().to_bytes()).decode("ascii"),
+            }))
             with self.client.websocket_connect("/ws/PeerB") as ws_b:
                 json.loads(ws_b.receive_text())
+                ws_b.send_text(json.dumps({
+                    "action": "register",
+                    "identity_pk": base64.b64encode(peer_b_identity.public_key().to_bytes()).decode("ascii"),
+                }))
 
                 # Pair them
                 ws_a.send_text(json.dumps({"action": "connect_peer", "target": "PeerB"}))
-                json.loads(ws_a.receive_text())
-                json.loads(ws_b.receive_text())
+                paired_a = json.loads(ws_a.receive_text())
+                paired_b = json.loads(ws_b.receive_text())
+                self.assertEqual(paired_a["type"], "pqc_handshake_complete")
+                self.assertEqual(paired_b["type"], "pqc_handshake_complete")
 
             # PeerB disconnected (exited context)
             disc_msg = json.loads(ws_a.receive_text())
@@ -486,9 +538,9 @@ class TestEphemeralWebPQRatchet(unittest.TestCase):
             self.assertIn("PeerB", disc_msg["message"])
 
     def test_advanced_security_headers(self):
-        resp = self.client.get("/")
+        resp = self.client.get("https://testserver/")
         self.assertEqual(resp.status_code, 200)
-        self.assertIn("max-age=63072000", resp.headers.get("Strict-Transport-Security", ""))
+        self.assertIn("max-age=31536000", resp.headers.get("Strict-Transport-Security", ""))
         self.assertEqual(resp.headers.get("Cross-Origin-Opener-Policy"), "same-origin")
         self.assertEqual(resp.headers.get("Cross-Origin-Embedder-Policy"), "require-corp")
         self.assertIn("camera=()", resp.headers.get("Permissions-Policy", ""))
@@ -496,6 +548,8 @@ class TestEphemeralWebPQRatchet(unittest.TestCase):
         csp = resp.headers.get("Content-Security-Policy", "")
         self.assertNotIn("unsafe-eval", csp)
         self.assertIn("script-src 'self'", csp)
+        http_resp = self.client.get("http://testserver/")
+        self.assertNotIn("strict-transport-security", http_resp.headers)
 
     def test_standalone_static_endpoints_and_manifest(self):
         """Verifies root routes for standalone client execution and manifest distribution."""
