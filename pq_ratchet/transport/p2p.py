@@ -38,6 +38,7 @@ MAX_OUTBOUND_HANDSHAKES = 64
 MAX_ACTIVE_PEERS = 256
 MAX_KNOWN_ADDRESSES = 512
 MAX_PEER_EXCHANGE_ENTRIES = 256
+MAX_PENDING_E2EE_INITS = 64
 PEER_ID_PATTERN = re.compile(r"^pqc_[0-9a-f]{32}$")
 HOSTNAME_PATTERN = re.compile(
     r"^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)"
@@ -271,6 +272,25 @@ class PQP2PNode:
                 self._known_pks[peer_id] = tp
                 return tp
         return None
+
+    def _abort_pending_e2ee_init(
+        self,
+        peer_id: str,
+        expected_session: Optional[PQRatchetSession] = None,
+    ) -> bool:
+        """Close and signal a pending init only if it is still the same attempt."""
+        pending = self._pending_e2ee_inits.get(peer_id)
+        if pending is None:
+            return False
+        session, event = pending
+        if expected_session is not None and session is not expected_session:
+            return False
+        self._pending_e2ee_inits.pop(peer_id, None)
+        try:
+            session.close()
+        finally:
+            event.set()
+        return True
 
     async def connect_peer(
         self,
@@ -556,10 +576,12 @@ class PQP2PNode:
                 _, hs_event = self._pending_e2ee_inits[target_peer_id]
                 try:
                     await asyncio.wait_for(hs_event.wait(), timeout=timeout)
-                except (asyncio.TimeoutError, asyncio.CancelledError):
+                except asyncio.TimeoutError:
                     return False
                 e2ee_session = self._e2ee_sessions.get(target_peer_id)
             else:
+                if len(self._pending_e2ee_inits) >= MAX_PENDING_E2EE_INITS:
+                    return False
                 session_candidate, init_bytes = PQRatchetSession.initiate_handshake(
                     local_identity=self.local_identity,
                     remote_identity=resolved_pk,
@@ -567,20 +589,23 @@ class PQP2PNode:
                 hs_event = asyncio.Event()
                 self._pending_e2ee_inits[target_peer_id] = (session_candidate, hs_event)
 
-                dispatched = await self._send_relayed(
-                    target_peer_id=target_peer_id,
-                    e2ee_payload=init_bytes,
-                    msg_type=P2PMessageEnvelope.TYPE_E2EE_HANDSHAKE_INIT,
-                )
-                if not dispatched:
-                    self._pending_e2ee_inits.pop(target_peer_id, None)
-                    return False
-
                 try:
+                    dispatched = await self._send_relayed(
+                        target_peer_id=target_peer_id,
+                        e2ee_payload=init_bytes,
+                        msg_type=P2PMessageEnvelope.TYPE_E2EE_HANDSHAKE_INIT,
+                    )
+                    if not dispatched:
+                        self._abort_pending_e2ee_init(target_peer_id, session_candidate)
+                        return False
+
                     await asyncio.wait_for(hs_event.wait(), timeout=timeout)
-                except (asyncio.TimeoutError, asyncio.CancelledError):
-                    self._pending_e2ee_inits.pop(target_peer_id, None)
+                except asyncio.TimeoutError:
+                    self._abort_pending_e2ee_init(target_peer_id, session_candidate)
                     return False
+                except BaseException:
+                    self._abort_pending_e2ee_init(target_peer_id, session_candidate)
+                    raise
 
                 e2ee_session = self._e2ee_sessions.get(target_peer_id)
 
