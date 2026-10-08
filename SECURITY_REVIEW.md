@@ -74,11 +74,13 @@ This follow-up is by the same reviewer in the same work session. It is not indep
 
 ### P2 — A normal browser peer disconnect erases the app-wide identity key
 
-`PQRatchetSession` retains the same `localIdentity` object owned by the browser app. Its `close()` method zeroizes that identity's secret-key byte array ([pqc-engine.js](web_builder/src/pqc-engine.js#L1050-L1059)). The normal `onPeerDisconnected()` handler calls `ratchetSession.close()` but leaves the app's `localIdentity` variable set ([app.js](pq_ratchet/web/static/app.js#L668-L685)); the next handshake therefore sees an object whose secret bytes have already been erased. The app normally restores or generates this identity once during initialization, rather than recreating it for each peer ([app.js](pq_ratchet/web/static/app.js#L115-L146)).
+The signed browser bundle still has `PQRatchetSession.close()` zeroize the secret-key bytes of the `localIdentity` object that the app also owns ([pq-crypto.bundle.js](pq_ratchet/web/static/pq-crypto.bundle.js#L5588-L5596)). The normal `onPeerDisconnected()` handler calls `ratchetSession.close()` but leaves the app's `localIdentity` variable set ([app.js](pq_ratchet/web/static/app.js#L668-L685)); until the signed bundle is updated, the next handshake can therefore see an erased key. The app normally restores or generates this identity once during initialization, rather than recreating it for each peer ([app.js](pq_ratchet/web/static/app.js#L115-L146)).
+
+The browser build source now treats session close as idempotent, zeroizes session-scoped secrets, and drops its reference to the app-owned identity without zeroizing it ([pqc-engine.js](web_builder/src/pqc-engine.js#L1058-L1081)). This source change is not present in the signed bundle and is not active in the served browser client yet.
 
 **Impact:** After an ordinary peer disconnect, subsequent handshakes in the same page can fail when signing. A page reload may restore the key from its local encrypted storage, but the app does not perform that recovery here.
 
-**Required before production:** Give session teardown ownership only of session keys. Keep the long-term identity lifecycle in the application layer, and define explicit logout/lock behavior that zeroizes and then reloads or drops the identity object.
+**Required before production:** Rebuild the browser assets and sign them with the authorized release key. Keep session teardown ownership limited to session keys, and retain explicit logout/lock behavior that zeroizes and then reloads or drops the app-owned identity object.
 
 ### P2 — The signed browser ratchet still commits outbound state before encryption and serialization succeed
 

@@ -664,6 +664,7 @@ export class PQRatchetSession {
     this.localIdentity = localIdentity;
     this.remoteIdentity = remoteIdentity;
     this.isInitiator = isInitiator;
+    this.closed = false;
 
     this.rootKey = new Uint8Array(ROOT_KEY_BYTES);
     this.sendingChainKey = null;
@@ -680,6 +681,12 @@ export class PQRatchetSession {
     this._pendingNextKemPk = null;
 
     this.skippedKeys = new Map(); // key: `${epoch}:${seq}` -> messageKey
+  }
+
+  _ensureOpen() {
+    if (this.closed) {
+      throw new Error("Ratchet session is closed");
+    }
   }
 
   static initiateHandshake(localIdentity, remoteIdentity) {
@@ -775,7 +782,7 @@ export class PQRatchetSession {
   }
 
   validateHandshakeResponse(respPacketBytes) {
-    if (!this.isInitiator || !this.localEphemSK) {
+    if (this.closed || !this.isInitiator || !this.localEphemSK) {
       return false;
     }
     try {
@@ -809,6 +816,7 @@ export class PQRatchetSession {
   }
 
   completeHandshake(respPacketBytes) {
+    this._ensureOpen();
     if (!this.isInitiator || !this.localEphemSK) {
       throw new Error("Session state is not in a pending initiator handshake");
     }
@@ -871,6 +879,7 @@ export class PQRatchetSession {
   }
 
   ratchetEncrypt(plaintextBytes) {
+    this._ensureOpen();
     if (plaintextBytes.length > MAX_PACKET_PAYLOAD_BYTES) {
       throw new Error("Plaintext exceeds maximum bound");
     }
@@ -905,6 +914,7 @@ export class PQRatchetSession {
   }
 
   ratchetDecrypt(packetBytes) {
+    this._ensureOpen();
     const packet = RatchetDataPacket.deserialize(packetBytes);
     const nonce = RatchetDataPacket.deriveNonce(packet.epoch, packet.seq);
     const ad = packet.getAssociatedData();
@@ -1048,7 +1058,11 @@ export class PQRatchetSession {
   }
 
   close() {
-    if (this.localIdentity) this.localIdentity.zeroize();
+    if (this.closed) return;
+    this.closed = true;
+
+    // The app owns the long-term identity key and may reuse it for another
+    // peer session. Closing this ratchet only destroys session-scoped secrets.
     if (this.localEphemSK) this.localEphemSK.zeroize();
     if (this.sendingChainKey) zeroize(this.sendingChainKey);
     if (this.receivingChainKey) zeroize(this.receivingChainKey);
@@ -1057,6 +1071,16 @@ export class PQRatchetSession {
       zeroize(mk);
     }
     this.skippedKeys.clear();
+
+    this.localIdentity = null;
+    this.remoteIdentity = null;
+    this.localEphemSK = null;
+    this.remoteEphemPK = null;
+    this.sendingChainKey = null;
+    this.receivingChainKey = null;
+    this.rootKey = null;
+    this._pendingKemCt = null;
+    this._pendingNextKemPk = null;
   }
 }
 
