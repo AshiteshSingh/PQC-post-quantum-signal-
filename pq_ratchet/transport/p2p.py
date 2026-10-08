@@ -173,6 +173,8 @@ class PQP2PNode:
         self._e2ee_sessions: Dict[str, PQRatchetSession] = {}
         self._staged_e2ee_sessions: Dict[str, PQRatchetSession] = {}
         self._pending_e2ee_inits: Dict[str, Tuple[PQRatchetSession, asyncio.Event]] = {}
+        # Ratchet state and relay dispatch order must stay aligned across callers.
+        self._e2ee_send_lock = asyncio.Lock()
         self._seen_handshake_inits = _BoundedSeenSet(MAX_SEEN_HANDSHAKE_INITS)
         self._known_pks: Dict[str, IdentityPublicKey] = {}
         for tp in self.trusted_peers:
@@ -639,12 +641,27 @@ class PQP2PNode:
         if e2ee_session is None:
             return False
 
-        ciphertext = e2ee_session.ratchet_encrypt(message)
-        return await self._send_relayed(
-            target_peer_id=target_peer_id,
-            e2ee_payload=ciphertext,
-            msg_type=P2PMessageEnvelope.TYPE_E2EE_RATCHET_DATA,
-        )
+        async with self._e2ee_send_lock:
+            # A replacement handshake may have completed while this caller was
+            # waiting for the lock; always use the currently active candidate.
+            e2ee_session = self._e2ee_sessions.get(target_peer_id)
+            if e2ee_session is None:
+                return False
+            ciphertext = e2ee_session.ratchet_encrypt(message)
+            try:
+                dispatched = await self._send_relayed(
+                    target_peer_id=target_peer_id,
+                    e2ee_payload=ciphertext,
+                    msg_type=P2PMessageEnvelope.TYPE_E2EE_RATCHET_DATA,
+                )
+            except BaseException:
+                # The send chain has advanced; a failed or cancelled relay
+                # leaves delivery uncertain, so do not reuse this session.
+                self._discard_e2ee_candidate(target_peer_id, e2ee_session)
+                raise
+            if not dispatched:
+                self._discard_e2ee_candidate(target_peer_id, e2ee_session)
+            return dispatched
 
     async def send_message_to_peer(
         self,
