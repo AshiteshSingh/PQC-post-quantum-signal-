@@ -15,6 +15,7 @@ from pq_ratchet.constants import (
     DOMAIN_AUTH_RESPONDER,
     MAX_RATCHET_SKIP_GAP,
     MAX_PACKET_PAYLOAD_BYTES,
+    MAX_RATCHET_COUNTER,
     AEAD_TAG_BYTES,
 )
 from pq_ratchet.primitives.identity import (
@@ -346,6 +347,8 @@ class PQRatchetSession:
         Attaches pending KEM ratchet transitions if present.
         Complexity: O(|plaintext|) with O(1) symmetric chain advancement.
         """
+        if not isinstance(plaintext, bytes):
+            raise TypeError("Ratchet plaintext must be bytes")
         # Bound the serialized wire packet, not only the plaintext. Check before
         # advancing chain state so an oversized packet cannot desynchronize peers.
         packet_overhead = (
@@ -361,6 +364,13 @@ class PQRatchetSession:
                 f"Ratchet packet exceeds maximum bound ({MAX_PACKET_PAYLOAD_BYTES} bytes); "
                 f"maximum plaintext for this packet is {max_plaintext} bytes"
             )
+        if (
+            type(self.state.epoch) is not int
+            or not 0 <= self.state.epoch <= MAX_RATCHET_COUNTER
+            or type(self.state.sending_seq) is not int
+            or not 0 <= self.state.sending_seq <= MAX_RATCHET_COUNTER
+        ):
+            raise OverflowError("Ratchet epoch or sequence counter is exhausted")
         if self.state.sending_chain_key is None:
             raise RuntimeError("Sending chain key not initialized")
 
@@ -445,6 +455,8 @@ class PQRatchetSession:
             )
         if packet.kem_ct is not None and packet.seq != 0:
             raise ValueError("KEM ratchet transitions must begin at sequence zero")
+        if packet.kem_ct is not None and packet.epoch == MAX_RATCHET_COUNTER:
+            raise ValueError("KEM ratchet transition would overflow the epoch counter")
 
         # Case 2: Asymmetric Ratchet step present
         

@@ -20,6 +20,7 @@ from pq_ratchet.constants import (
     MLDSA65_SIGNATURE_BYTES,
     AEAD_NONCE_BYTES,
     MAX_PACKET_PAYLOAD_BYTES,
+    MAX_RATCHET_COUNTER,
 )
 from pq_ratchet.primitives.hybrid_kem import HybridKEMCiphertext, HybridKEMPublicKey
 
@@ -165,6 +166,13 @@ class RatchetDataPacket(NamedTuple):
         Deterministic 12-byte nonce generation: [epoch (4B) | seq (4B) | counter_pad (4B)].
         Invariant: Pair (epoch, seq) is strictly unique per message key; avoids nonce reuse.
         """
+        if (
+            type(epoch) is not int
+            or type(seq) is not int
+            or not 0 <= epoch <= MAX_RATCHET_COUNTER
+            or not 0 <= seq <= MAX_RATCHET_COUNTER
+        ):
+            raise ValueError("Ratchet epoch and sequence must fit unsigned 32-bit wire fields")
         return struct.pack("!III", epoch, seq, 0)
 
     def serialize(self) -> bytes:
@@ -196,6 +204,8 @@ class RatchetDataPacket(NamedTuple):
 
     @classmethod
     def deserialize(cls, data: bytes) -> "RatchetDataPacket":
+        if len(data) > MAX_PACKET_PAYLOAD_BYTES:
+            raise ValueError(f"Packet size {len(data)} exceeds maximum safety bound")
         if len(data) < 15:
             raise ValueError("Packet underflow: missing ratchet header")
         magic, ver, msg_type, epoch, seq, flags = struct.unpack("!4sBBIIB", data[:15])

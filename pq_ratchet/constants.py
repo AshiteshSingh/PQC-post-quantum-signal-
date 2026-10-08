@@ -47,3 +47,4 @@ DOMAIN_AUTH_RESPONDER: Final[bytes] = b"PQ-RATCHET-AUTH-RESP-v1"
 MAX_SKIPPED_KEYS_CACHE: Final[int] = 1000
 MAX_RATCHET_SKIP_GAP: Final[int] = 1000
 MAX_PACKET_PAYLOAD_BYTES: Final[int] = 16 * 1024 * 1024  # 16 MiB
+MAX_RATCHET_COUNTER: Final[int] = 0xFFFFFFFF  # Epoch and sequence fields are uint32 on wire
