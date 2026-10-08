@@ -261,9 +261,11 @@ class PQRatchetSession:
             if not resp_id_pk.verify(resp_pkt.signature, expected_resp_transcript):
                 return False
 
-            kem_ct = HybridKEMCiphertext.from_bytes(resp_pkt.kem_ct_bytes)
+            # Confirm fixed-size KEM framing and the responder's next public key
+            # here, but leave decapsulation to complete_handshake(). The response
+            # is not installed until that single stateful completion succeeds.
+            HybridKEMCiphertext.from_bytes(resp_pkt.kem_ct_bytes)
             HybridKEMPublicKey.from_bytes(resp_pkt.ephemeral_kem_pk_bytes)
-            self.state.local_ephem_sk.decapsulate(kem_ct)
             return True
         except Exception:
             return False
