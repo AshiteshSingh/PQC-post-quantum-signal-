@@ -63,18 +63,28 @@ class AsyncPQStreamSession:
         Establishes outbound TCP socket (direct or onion-routed) and executes initiator handshake.
         Complexity: Handshake latency = 1.5 RTT.
         """
-        if via_tor or host.endswith(".onion") or tor_proxy is not None:
-            from pq_ratchet.transport.tor import AsyncTorConnector
-            p_host = tor_proxy[0] if tor_proxy else "127.0.0.1"
-            p_port = tor_proxy[1] if tor_proxy else None
-            reader, writer = await AsyncTorConnector.open_connection_via_tor(
-                dest_host=host,
-                dest_port=port,
-                proxy_host=p_host,
-                proxy_port=p_port,
-            )
-        else:
-            reader, writer = await asyncio.open_connection(host, port)
+        try:
+            if via_tor or host.endswith(".onion") or tor_proxy is not None:
+                from pq_ratchet.transport.tor import AsyncTorConnector
+                p_host = tor_proxy[0] if tor_proxy else "127.0.0.1"
+                p_port = tor_proxy[1] if tor_proxy else None
+                reader, writer = await asyncio.wait_for(
+                    AsyncTorConnector.open_connection_via_tor(
+                        dest_host=host,
+                        dest_port=port,
+                        proxy_host=p_host,
+                        proxy_port=p_port,
+                    ),
+                    timeout=HANDSHAKE_TIMEOUT_SECONDS,
+                )
+            else:
+                reader, writer = await asyncio.wait_for(
+                    asyncio.open_connection(host, port),
+                    timeout=HANDSHAKE_TIMEOUT_SECONDS,
+                )
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError("Connection establishment timed out") from exc
+
         session = None
         try:
             deadline = asyncio.get_running_loop().time() + HANDSHAKE_TIMEOUT_SECONDS

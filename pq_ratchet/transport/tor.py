@@ -92,7 +92,7 @@ class AsyncTorConnector:
                 raise TorSOCKS5Error(f"Unsupported ATYP 0x{atyp:02x} in Tor response")
 
             return reader, writer
-        except Exception:
+        except BaseException:
             writer.close()
             try:
                 await writer.wait_closed()

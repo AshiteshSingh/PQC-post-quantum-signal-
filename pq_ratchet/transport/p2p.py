@@ -11,6 +11,7 @@ import binascii
 import json
 import struct
 import hashlib
+import ipaddress
 import re
 import secrets
 from collections import deque
@@ -32,7 +33,16 @@ from pq_ratchet.transport.session import AsyncPQStreamSession
 MAX_SEEN_RELAY_IDS = 10000
 MAX_SEEN_HANDSHAKE_INITS = 10000
 MAX_RELAY_HOPS = 3
+MAX_INBOUND_HANDSHAKES = 64
+MAX_OUTBOUND_HANDSHAKES = 64
+MAX_ACTIVE_PEERS = 256
+MAX_KNOWN_ADDRESSES = 512
+MAX_PEER_EXCHANGE_ENTRIES = 256
 PEER_ID_PATTERN = re.compile(r"^pqc_[0-9a-f]{32}$")
+HOSTNAME_PATTERN = re.compile(
+    r"^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)"
+    r"(?:\.(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?))*\.?$"
+)
 
 
 class _BoundedSeenSet:
@@ -127,6 +137,9 @@ class PQP2PNode:
         self._server: Optional[asyncio.Server] = None
         self._running = False
         self._peers: Dict[str, AsyncPQStreamSession] = {}
+        self._inbound_handshakes = 0
+        self._outbound_handshakes = 0
+        self._pending_inbound_writers: set[asyncio.StreamWriter] = set()
         self._known_addresses: Dict[str, Tuple[str, int]] = {}  # peer_id -> (host, port)
         self._seen_relay_ids = _BoundedSeenSet(MAX_SEEN_RELAY_IDS)
 
@@ -147,12 +160,24 @@ class PQP2PNode:
         """
         Binds TCP listener and begins accepting inbound P2P post-quantum links.
         """
+        if self._running or self._server is not None:
+            raise RuntimeError("P2P node is already running")
         self._running = True
-        self._server = await asyncio.start_server(
-            self._handle_inbound_connection,
-            self.listen_host,
-            self.listen_port,
-        )
+        try:
+            server = await asyncio.start_server(
+                self._handle_inbound_connection,
+                self.listen_host,
+                self.listen_port,
+                backlog=128,
+            )
+            if not self._running:
+                server.close()
+                await server.wait_closed()
+                raise RuntimeError("P2P node stopped during startup")
+            self._server = server
+        except BaseException:
+            self._running = False
+            raise
 
     async def stop(self) -> None:
         """
@@ -164,6 +189,15 @@ class PQP2PNode:
             self._server.close()
             await self._server.wait_closed()
             self._server = None
+
+        pending_writers = list(self._pending_inbound_writers)
+        for writer in pending_writers:
+            writer.close()
+        for writer in pending_writers:
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
 
         for peer_id, session in list(self._peers.items()):
             try:
@@ -228,30 +262,104 @@ class PQP2PNode:
         Establishes outbound post-quantum E2EE connection to peer node.
         Returns connected remote peer_id.
         """
-        session = await AsyncPQStreamSession.connect(
-            host=host,
-            port=port,
-            local_identity=self.local_identity,
-            remote_identity=expected_peer_pk,
-        )
+        if not self._running:
+            raise RuntimeError("P2P node must be started before connecting peers")
+        expected_peer_id = derive_peer_id(expected_peer_pk)
+        existing = self._peers.get(expected_peer_id)
+        if existing is not None and not existing._closed and (
+            self._is_canonical_peer_link(expected_peer_id, existing)
+            or self.peer_id > expected_peer_id
+        ):
+            return expected_peer_id
 
-        remote_pk = session.session.state.remote_identity
-        if not remote_pk:
+        if self._outbound_handshakes >= MAX_OUTBOUND_HANDSHAKES:
+            raise ConnectionError("Outbound peer handshake limit reached")
+        self._outbound_handshakes += 1
+        session: Optional[AsyncPQStreamSession] = None
+        try:
+            session = await AsyncPQStreamSession.connect(
+                host=host,
+                port=port,
+                local_identity=self.local_identity,
+                remote_identity=expected_peer_pk,
+            )
+
+            remote_pk = session.session.state.remote_identity
+            if not remote_pk:
+                raise ValueError("Remote identity missing from authenticated handshake")
+
+            remote_id = derive_peer_id(remote_pk)
+            installed = await self._install_peer_session(
+                remote_id=remote_id,
+                remote_pk=remote_pk,
+                host=host,
+                port=port,
+                session=session,
+            )
+            session = None  # The installer either owns the session or closes it.
+            if not installed and not self._running:
+                raise ConnectionError("P2P node stopped before the peer connection completed")
+            if not installed and remote_id not in self._peers:
+                raise ConnectionError("Active peer connection limit reached")
+            return remote_id
+        finally:
+            try:
+                if session is not None:
+                    await session.close()
+            finally:
+                self._outbound_handshakes -= 1
+
+    def _is_canonical_peer_link(self, remote_id: str, session: AsyncPQStreamSession) -> bool:
+        """Prefer the lower key-derived peer ID as initiator when links race."""
+        return session.session.state.is_initiator == (self.peer_id < remote_id)
+
+    async def _install_peer_session(
+        self,
+        remote_id: str,
+        remote_pk: IdentityPublicKey,
+        host: Optional[str],
+        port: Optional[int],
+        session: AsyncPQStreamSession,
+    ) -> bool:
+        # A handshake may finish while stop() is closing pending sockets. Do not
+        # publish a new session after shutdown has begun.
+        if not self._running:
             await session.close()
-            raise ValueError("Remote identity missing from authenticated handshake")
+            return False
 
-        remote_id = derive_peer_id(remote_pk)
+        existing = self._peers.get(remote_id)
+        if existing is not None and existing._closed:
+            self._peers.pop(remote_id, None)
+            existing = None
+        if existing is None and len(self._peers) >= MAX_ACTIVE_PEERS:
+            await session.close()
+            return False
+
+        if existing is not None:
+            existing_is_canonical = self._is_canonical_peer_link(remote_id, existing)
+            candidate_is_canonical = self._is_canonical_peer_link(remote_id, session)
+            if existing_is_canonical or not candidate_is_canonical:
+                await session.close()
+                return False
+
+        # Publish the replacement before closing the old stream. Its read-loop
+        # finalizer checks object identity and cannot remove this new session.
         self._peers[remote_id] = session
-        self._known_addresses[remote_id] = (host, port)
+        if host is not None and port is not None:
+            self._known_addresses[remote_id] = (host, port)
         self._known_pks[remote_id] = remote_pk
-
         asyncio.create_task(self._peer_read_loop(remote_id, session))
 
-        if self.on_peer_connected:
-            self.on_peer_connected(remote_id)
+        if existing is not None:
+            await existing.close()
+        elif self.on_peer_connected:
+            try:
+                self.on_peer_connected(remote_id)
+            except Exception:
+                pass
 
         await self._broadcast_peer_exchange()
-        return remote_id
+        return True
 
     async def send_direct(self, target_peer_id: str, message: bytes) -> bool:
         """
@@ -400,6 +508,8 @@ class PQP2PNode:
         The custom protocol and its composition have not been independently reviewed.
         """
         if target_pk is not None:
+            if derive_peer_id(target_pk) != target_peer_id:
+                raise ValueError("Target peer identifier does not match the supplied identity key")
             self._known_pks[target_peer_id] = target_pk
 
         if not force_relay:
@@ -536,6 +646,17 @@ class PQP2PNode:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> None:
+        if not self._running or self._inbound_handshakes >= MAX_INBOUND_HANDSHAKES:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+            return
+
+        self._inbound_handshakes += 1
+        self._pending_inbound_writers.add(writer)
+        session: Optional[AsyncPQStreamSession] = None
         try:
             session = await AsyncPQStreamSession.accept(
                 reader=reader,
@@ -546,27 +667,30 @@ class PQP2PNode:
             remote_pk = session.session.state.remote_identity
             if not remote_pk:
                 await session.close()
+                session = None
                 return
 
             remote_id = derive_peer_id(remote_pk)
-            peername = writer.get_extra_info("peername")
-            if peername:
-                self._known_addresses[remote_id] = (peername[0], peername[1])
-
-            self._peers[remote_id] = session
-            self._known_pks[remote_id] = remote_pk
-            asyncio.create_task(self._peer_read_loop(remote_id, session))
-
-            if self.on_peer_connected:
-                self.on_peer_connected(remote_id)
-
-            await self._broadcast_peer_exchange()
+            await self._install_peer_session(
+                remote_id=remote_id,
+                remote_pk=remote_pk,
+                host=None,
+                port=None,
+                session=session,
+            )
+            session = None
         except Exception:
-            writer.close()
-            try:
-                await writer.wait_closed()
-            except Exception:
-                pass
+            if session is not None:
+                await session.close()
+            else:
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+        finally:
+            self._pending_inbound_writers.discard(writer)
+            self._inbound_handshakes -= 1
 
     async def _peer_read_loop(self, peer_id: str, session: AsyncPQStreamSession) -> None:
         try:
@@ -597,9 +721,14 @@ class PQP2PNode:
         except Exception:
             pass
         finally:
-            self._peers.pop(peer_id, None)
-            if self.on_peer_disconnected:
-                self.on_peer_disconnected(peer_id)
+            is_current_session = self._peers.get(peer_id) is session
+            if is_current_session:
+                self._peers.pop(peer_id, None)
+                if self.on_peer_disconnected:
+                    try:
+                        self.on_peer_disconnected(peer_id)
+                    except Exception:
+                        pass
             await session.close()
 
     async def _broadcast_peer_exchange(self) -> None:
@@ -609,7 +738,7 @@ class PQP2PNode:
         peer_list = [
             {"peer_id": self.peer_id, "host": self.public_host, "port": self.listen_port}
         ]
-        for pid, (h, p) in self._known_addresses.items():
+        for pid, (h, p) in list(self._known_addresses.items())[:MAX_PEER_EXCHANGE_ENTRIES - 1]:
             peer_list.append({"peer_id": pid, "host": h, "port": p})
 
         pex_data = json.dumps({"peers": peer_list}).encode("utf-8")
@@ -624,12 +753,36 @@ class PQP2PNode:
     async def _handle_peer_exchange(self, payload: bytes) -> None:
         try:
             data = json.loads(payload.decode("utf-8"))
+            if not isinstance(data, dict):
+                return
             peers = data.get("peers", [])
+            if not isinstance(peers, list) or len(peers) > MAX_PEER_EXCHANGE_ENTRIES:
+                return
             for p in peers:
+                if not isinstance(p, dict) or set(p) != {"peer_id", "host", "port"}:
+                    continue
                 pid = p.get("peer_id")
                 h = p.get("host")
                 port = p.get("port")
-                if pid and h and port and pid != self.peer_id:
+                if (
+                    not isinstance(pid, str)
+                    or not PEER_ID_PATTERN.fullmatch(pid)
+                    or pid == self.peer_id
+                    or not isinstance(h, str)
+                    or not h
+                    or len(h) > 253
+                    or any(ch.isspace() for ch in h)
+                    or any(ch in h for ch in "/\\@%\x00")
+                    or type(port) is not int
+                    or not 1 <= port <= 65535
+                ):
+                    continue
+                try:
+                    ipaddress.ip_address(h)
+                except ValueError:
+                    if not HOSTNAME_PATTERN.fullmatch(h):
+                        continue
+                if pid in self._known_addresses or len(self._known_addresses) < MAX_KNOWN_ADDRESSES:
                     self._known_addresses[pid] = (h, port)
         except Exception:
             pass
