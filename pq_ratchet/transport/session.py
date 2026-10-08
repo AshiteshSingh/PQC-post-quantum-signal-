@@ -188,26 +188,31 @@ class AsyncPQStreamSession:
         if self._closed:
             raise ConnectionResetError("Session is closed")
         packet_bytes = self.session.ratchet_encrypt(plaintext)
-        frame = struct.pack("!I", len(packet_bytes)) + packet_bytes
-        self.writer.write(frame)
-        await self.writer.drain()
+        try:
+            frame = struct.pack("!I", len(packet_bytes)) + packet_bytes
+            self.writer.write(frame)
+            await self.writer.drain()
+        except BaseException:
+            # Encryption advanced the send chain. Once transmission may have
+            # started, the stream cannot safely be reused after any I/O failure.
+            await self.close()
+            raise
 
     async def recv_message(self) -> bytes:
         """
-        Reads framed packet from wire and decrypts via ratchet state machine.
+        Reads and decrypts one frame. Any read, framing, or authentication error
+        closes the stream because its framing or ratchet state may be ambiguous.
         """
         if self._closed:
             raise ConnectionResetError("Session is closed")
-        len_buf = await self.reader.readexactly(4)
-        (length,) = struct.unpack("!I", len_buf)
-        if length > MAX_PACKET_PAYLOAD_BYTES:
-            raise ValueError(f"Packet size {length} exceeds maximum safety bound")
-        packet_bytes = await self.reader.readexactly(length)
         try:
+            len_buf = await self.reader.readexactly(4)
+            (length,) = struct.unpack("!I", len_buf)
+            if length > MAX_PACKET_PAYLOAD_BYTES:
+                raise ValueError(f"Packet size {length} exceeds maximum safety bound")
+            packet_bytes = await self.reader.readexactly(length)
             return self.session.ratchet_decrypt(packet_bytes)
-        except Exception:
-            # An invalid authenticated frame closes the channel so a peer cannot
-            # repeatedly force expensive KEM decapsulation on the same session.
+        except BaseException:
             await self.close()
             raise
 
