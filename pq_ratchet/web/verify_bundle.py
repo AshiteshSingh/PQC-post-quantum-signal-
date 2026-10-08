@@ -47,6 +47,9 @@ REQUIRED_CLIENT_ASSETS: FrozenSet[str] = frozenset({
     "pq-crypto.bundle.js",
     "app.js",
 })
+MAX_SIGNED_MANIFEST_BYTES = 64 * 1024
+MAX_RELEASE_SIGNATURE_BYTES = 8 * 1024
+MAX_VERIFIED_ASSET_BYTES = 8 * 1024 * 1024
 
 # Pinned trusted root SHA-256 digest of authentic manifest.json
 DEFAULT_TRUSTED_MANIFEST_SHA256: str = (
@@ -144,6 +147,91 @@ def resolve_trusted_pk(
         pass
 
     return None
+
+
+def load_verified_static_assets(static_dir: Optional[str] = None) -> Dict[str, bytes]:
+    """Load only assets authenticated by the embedded release trust anchor.
+
+    The returned bytes are the exact bytes whose SHA-256 and SRI digests were
+    checked against the signed manifest. Callers can serve this snapshot without
+    reopening mutable files after verification.
+    """
+    if static_dir is None:
+        static_dir = os.path.join(os.path.dirname(__file__), "static")
+
+    manifest_path = os.path.join(static_dir, "manifest.json")
+    signature_path = os.path.join(static_dir, "manifest.sig")
+    try:
+        with open(manifest_path, "rb") as manifest_file:
+            manifest_raw = manifest_file.read(MAX_SIGNED_MANIFEST_BYTES + 1)
+        with open(signature_path, "rb") as signature_file:
+            signature_raw = signature_file.read(MAX_RELEASE_SIGNATURE_BYTES + 1)
+    except OSError as exc:
+        raise ValueError("Signed browser release metadata is unavailable") from exc
+    if len(manifest_raw) > MAX_SIGNED_MANIFEST_BYTES:
+        raise ValueError("Browser release manifest exceeds its size limit")
+    if len(signature_raw) > MAX_RELEASE_SIGNATURE_BYTES:
+        raise ValueError("Browser release signature exceeds its size limit")
+
+    signature = signature_raw
+    if len(signature) != MLDSA65_SIGNATURE_BYTES:
+        try:
+            signature = base64.b64decode(signature_raw.strip(), validate=True)
+        except Exception as exc:
+            raise ValueError("Browser release signature has an invalid encoding") from exc
+    if len(signature) != MLDSA65_SIGNATURE_BYTES:
+        raise ValueError("Browser release signature has an invalid length")
+
+    trusted_pk = resolve_trusted_pk()
+    if trusted_pk is None or not trusted_pk.verify(signature, manifest_raw):
+        raise ValueError("Browser release manifest signature verification failed")
+
+    try:
+        manifest = json.loads(manifest_raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Browser release manifest is not valid UTF-8 JSON") from exc
+    if not isinstance(manifest, dict):
+        raise ValueError("Browser release manifest has an invalid root schema")
+
+    files_spec = manifest.get("files")
+    if not isinstance(files_spec, dict) or set(files_spec) != REQUIRED_CLIENT_ASSETS:
+        raise ValueError("Browser release manifest does not declare the exact required asset set")
+
+    verified_assets: Dict[str, bytes] = {}
+    for asset_name in sorted(REQUIRED_CLIENT_ASSETS):
+        expected = files_spec.get(asset_name)
+        if not isinstance(expected, dict):
+            raise ValueError(f"Browser release manifest entry is invalid: {asset_name}")
+        expected_size = expected.get("bytes")
+        if (
+            type(expected_size) is not int
+            or expected_size < 0
+            or expected_size > MAX_VERIFIED_ASSET_BYTES
+        ):
+            raise ValueError(f"Browser release asset size is invalid: {asset_name}")
+        try:
+            with open(os.path.join(static_dir, asset_name), "rb") as asset_file:
+                asset_bytes = asset_file.read(expected_size + 1)
+        except OSError as exc:
+            raise ValueError(f"Browser release asset is unavailable: {asset_name}") from exc
+
+        sha256_hex = hashlib.sha256(asset_bytes).hexdigest()
+        sri_sha384 = f"sha384-{base64.b64encode(hashlib.sha384(asset_bytes).digest()).decode('ascii')}"
+        if (
+            not isinstance(expected.get("sha256"), str)
+            or sha256_hex.lower() != expected["sha256"].lower()
+            or not isinstance(expected.get("sri_sha384"), str)
+            or sri_sha384 != expected["sri_sha384"]
+            or len(asset_bytes) != expected_size
+        ):
+            raise ValueError(f"Browser release asset failed integrity checks: {asset_name}")
+        verified_assets[asset_name] = asset_bytes
+
+    verified_assets["manifest.json"] = manifest_raw
+    verified_assets["manifest.sig"] = signature_raw
+    if trusted_pk is not None:
+        verified_assets["release_key.pub"] = trusted_pk.to_bytes()
+    return verified_assets
 
 
 def sign_manifest_bytes(manifest_bytes: bytes, private_key: IdentityPrivateKey) -> bytes:

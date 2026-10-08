@@ -16,10 +16,10 @@ import time
 import asyncio
 import secrets
 import hmac
+from contextlib import asynccontextmanager
 from typing import Dict, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import JSONResponse, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from urllib.parse import urlsplit
 
@@ -250,11 +250,43 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
-app = FastAPI(title="PQ-Ratchet Ephemeral Chat & Blind Relay", docs_url=None, redoc_url=None)
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+VERIFIED_STATIC_ASSETS: Dict[str, bytes] = {}
+
+
+@asynccontextmanager
+async def _verified_asset_lifespan(_app):
+    from pq_ratchet.web.verify_bundle import load_verified_static_assets
+
+    try:
+        verified_assets = load_verified_static_assets(STATIC_DIR)
+    except Exception as exc:
+        raise RuntimeError(
+            "Refusing to start the web relay because the browser release failed signature or integrity verification"
+        ) from exc
+
+    VERIFIED_STATIC_ASSETS.clear()
+    VERIFIED_STATIC_ASSETS.update(verified_assets)
+    try:
+        yield
+    finally:
+        VERIFIED_STATIC_ASSETS.clear()
+
+
+app = FastAPI(
+    title="PQ-Ratchet Ephemeral Chat & Blind Relay",
+    docs_url=None,
+    redoc_url=None,
+    lifespan=_verified_asset_lifespan,
+)
 app.add_middleware(SecurityHeadersMiddleware)
 
-STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+def _verified_asset_response(asset_name: str, media_type: str) -> Response:
+    asset_bytes = VERIFIED_STATIC_ASSETS.get(asset_name)
+    if asset_bytes is None:
+        raise HTTPException(status_code=503, detail="Verified browser release is unavailable")
+    return Response(content=asset_bytes, media_type=media_type)
 
 
 class UserSession:
@@ -331,43 +363,37 @@ async def cleanup_expired_sessions() -> None:
 
 @app.get("/")
 async def serve_index():
-    return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+    return _verified_asset_response("index.html", "text/html; charset=utf-8")
 
 
 @app.get("/pq-crypto.bundle.js")
 async def serve_bundle():
-    return FileResponse(os.path.join(STATIC_DIR, "pq-crypto.bundle.js"), media_type="application/javascript")
+    return _verified_asset_response("pq-crypto.bundle.js", "application/javascript")
 
 
 @app.get("/app.js")
 async def serve_app_js():
-    return FileResponse(os.path.join(STATIC_DIR, "app.js"), media_type="application/javascript")
+    return _verified_asset_response("app.js", "application/javascript")
 
 
 @app.get("/style.css")
 async def serve_style():
-    return FileResponse(os.path.join(STATIC_DIR, "style.css"), media_type="text/css")
+    return _verified_asset_response("style.css", "text/css")
 
 
 @app.get("/manifest.json")
 async def serve_manifest():
-    return FileResponse(os.path.join(STATIC_DIR, "manifest.json"), media_type="application/json")
+    return _verified_asset_response("manifest.json", "application/json")
 
 
 @app.get("/manifest.sig")
 async def serve_manifest_sig():
-    sig_path = os.path.join(STATIC_DIR, "manifest.sig")
-    if os.path.isfile(sig_path):
-        return FileResponse(sig_path, media_type="application/octet-stream")
-    raise HTTPException(status_code=404, detail="Manifest signature not found")
+    return _verified_asset_response("manifest.sig", "application/octet-stream")
 
 
 @app.get("/release_key.pub")
 async def serve_release_key():
-    pk_path = os.path.join(STATIC_DIR, "release_key.pub")
-    if os.path.isfile(pk_path):
-        return FileResponse(pk_path, media_type="application/octet-stream")
-    raise HTTPException(status_code=404, detail="Release public key not found")
+    return _verified_asset_response("release_key.pub", "application/octet-stream")
 
 
 

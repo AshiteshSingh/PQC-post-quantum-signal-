@@ -56,9 +56,9 @@ The native P2P path requires configured identity pins, but the browser applicati
 
 ### P2 — Browser release integrity is not an end-to-end trust guarantee
 
-The manifest verifier checks files on disk, while a remotely served browser necessarily trusts the delivered root HTML. SRI protects subresources only relative to hashes in that HTML. The README documents this limitation. There is no independent browser-side mechanism here that authenticates the root page before it executes.
+The server now verifies the signed manifest and exact asset bytes at startup, then serves the verified in-memory snapshot; a failed signature or digest check prevents startup. A remotely served browser still trusts the delivered root HTML, and SRI protects subresources only relative to hashes in that HTML. There is no independent browser-side mechanism here that authenticates the root page before it executes.
 
-**Impact:** A compromised web host or deployment pipeline can deliver modified client code and access unlocked keys and messages.
+**Impact:** A compromised web host or deployment pipeline can still deliver modified root HTML or alter the running process, exposing unlocked keys and messages. Startup validation protects the packaged asset snapshot from mismatches present before startup and prevents later on-disk edits from changing the bytes served by this process.
 
 **Required before production:** Use a signed, reproducible, independently distributed client or a verified local/packaged client. Protect and document the release-signing key and release process.
 
