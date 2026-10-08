@@ -1,7 +1,7 @@
 # Protocol Security Review
 
-**Review date:** 2026-10-08  
-**Decision:** **Not approved for production use. Keep the experimental/unaudited warning.**  
+**Review date:** 2026-10-08
+**Decision:** **Not approved for production use. Keep the experimental/unaudited warning.**
 **Review type:** First-pass static review of the checked-in Python, browser, transport, and ProVerif sources. This is not an independent cryptographic audit. Tests, ProVerif, dependency builds, and runtime behavior were not executed for this review.
 
 ## Executive assessment
