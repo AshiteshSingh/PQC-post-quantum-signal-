@@ -2,20 +2,30 @@
 pq_ratchet.web.verify_bundle
 Independent Client-Side Cryptographic Verifier.
 
-Threat Model & Boundary Specification:
-In browser-based cryptographic applications, dynamic script delivery by the web host
-places the host within the execution trust chain. If the web host is within the adversary
-threat model (malicious relay operator, compromised server, rogue TLS termination),
-the host can serve trojanized JavaScript that intercepts identity private keys or plaintexts.
+Threat Model & Trust Boundary Specification:
+In browser-based cryptographic applications, dynamic script delivery by a remote web host
+places the host within the execution trust chain. For a server-hosted web UI, the root
+document (index.html) is delivered dynamically over the network on every page load.
+Subresource Integrity (SRI) guarantees only that fetched subresources match the digests
+declared in index.html; an adversarial or compromised host can modify both index.html and its
+embedded SRI hashes simultaneously. Browsers cannot verify the root HTML document before execution.
+
+Consequently:
+- Server-Hosted Dynamic Delivery (Weak Trust Boundary): Users inherently trust the web host
+  not to inject malicious code into the root document during delivery.
+- Separately Verified Local Copy (Strong Trust Boundary): When users execute a local copy
+  (e.g., file://index.html, a local web server, or a packaged client) authenticated by this
+  verifier prior to execution, the code trust boundary is decoupled from the network relay.
+  The remote server operates solely as an untrusted blind WebSocket relay.
 
 This utility enforces independent, out-of-band cryptographic authentication of the client-side
-code bundle before execution. Verification mandates:
+code bundle on disk before execution:
 1. Manifest Authenticity: The distribution manifest (manifest.json) must be authenticated
    against a trusted root SHA-256 digest OR an unforgeable post-quantum digital signature
    (FIPS 204 ML-DSA-65 EUF-CMA) signed by an independent release key. Untrusted or modified
    manifests are strictly rejected. Signature-only verification is supported for new releases.
 2. Mandatory Asset Completeness: The manifest must declare the exact mandatory client asset
-   set (REQUIRED_CLIENT_ASSETS). Missing 'files' fields, empty mappings, or omitted files fail.
+   set (REQUIRED_CLIENT_ASSETS), including index.html. Missing fields or omitted files fail.
 3. Asset Cryptographic Integrity: Every mandatory asset on disk is verified against both
    SHA-256 and W3C Subresource Integrity (SRI) SHA-384 digests in single-pass O(|asset|) streaming.
 """
@@ -387,8 +397,10 @@ def main() -> int:
     print("=" * 70)
 
     if valid:
-        print("[+] SUCCESS: All client-side cryptographic assets match authenticated manifest.")
-        print("[+] Protection against malicious host code injection verified.\n")
+        print("[+] SUCCESS: All local client-side cryptographic assets match authenticated manifest.")
+        print("[+] Local trust boundary verified against release key.")
+        print("[*] Note: For server-hosted web UIs, browsers cannot authenticate root HTML prior to execution.")
+        print("    Use a verified local copy (file:// or standalone client) for zero-trust relay isolation.\n")
         return 0
     else:
         print("[!] FAILURE: Integrity verification failed! Possible code tampering or corruption.\n")

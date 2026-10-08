@@ -89,14 +89,44 @@ def cleanup_ephemeral_tls(temp_dir: str) -> None:
     Performs best-effort destruction of ephemeral TLS key material on disk.
     Overwrites the existing key file in-place with random bytes before directory unlinking.
 
+    SECURITY INVARIANT (API Footgun Mitigation):
+    Strictly verifies that the target directory was created by this module:
+    1. Basename must begin with the expected module prefix ('pq_ratchet_tls_').
+    2. Real path must reside within the system temporary directory.
+    Rejects any unverified, arbitrary, or root directory paths by raising ValueError.
+
     LIMITATION (Best-Effort Cleanup):
     Modern SSD Flash Translation Layers (FTL wear-leveling), copy-on-write filesystems
     (ZFS, Btrfs, APFS), and OS journal buffers prevent guaranteeing deterministic physical
     flash cell zeroization from user-space software.
     """
-    if not temp_dir or not os.path.isdir(temp_dir):
+    if not temp_dir:
         return
-    key_path = os.path.join(temp_dir, "key.pem")
+
+    real_path = os.path.realpath(temp_dir)
+    if not os.path.isdir(real_path):
+        return
+
+    # Guard 1: Verify basename begins with the expected module prefix
+    dir_name = os.path.basename(real_path)
+    if not dir_name.startswith("pq_ratchet_tls_"):
+        raise ValueError(
+            f"Security Violation: Refusing to delete directory not created by ephemeral TLS module: '{temp_dir}'"
+        )
+
+    # Guard 2: Verify path resides strictly within the system temporary directory
+    sys_temp = os.path.realpath(tempfile.gettempdir())
+    try:
+        common = os.path.commonpath([real_path, sys_temp])
+    except ValueError:
+        common = None
+
+    if common != sys_temp or real_path == sys_temp:
+        raise ValueError(
+            f"Security Violation: Refusing to delete directory outside system temporary folder: '{temp_dir}'"
+        )
+
+    key_path = os.path.join(real_path, "key.pem")
     if os.path.isfile(key_path):
         try:
             size = os.path.getsize(key_path)
@@ -108,5 +138,6 @@ def cleanup_ephemeral_tls(temp_dir: str) -> None:
                     os.fsync(f.fileno())
         except Exception:
             pass
+
     import shutil
-    shutil.rmtree(temp_dir, ignore_errors=True)
+    shutil.rmtree(real_path, ignore_errors=False)

@@ -278,10 +278,13 @@ class TestEphemeralWebPQRatchet(unittest.TestCase):
     def test_ephemeral_tls_in_place_overwrite(self):
         """
         P2 Remediation Verification:
-        Ensures cleanup_ephemeral_tls performs in-place overwriting of key.pem without truncation.
+        Ensures cleanup_ephemeral_tls directly performs in-place overwriting of key.pem
+        with random bytes before removing the temporary directory.
         """
         import os
-        from pq_ratchet.web.tls import generate_ephemeral_tls_cert
+        import shutil
+        from unittest.mock import patch
+        from pq_ratchet.web.tls import generate_ephemeral_tls_cert, cleanup_ephemeral_tls
 
         cert_p, key_p, temp_dir = generate_ephemeral_tls_cert("127.0.0.1")
         with open(key_p, "rb") as f:
@@ -289,21 +292,51 @@ class TestEphemeralWebPQRatchet(unittest.TestCase):
         orig_len = len(original)
         self.assertTrue(original.startswith(b"-----BEGIN PRIVATE KEY-----"))
 
-        # Verify r+b overwrite preserves length and replaces contents
-        with open(key_p, "r+b") as f:
-            f.seek(0)
-            f.write(os.urandom(orig_len))
-            f.flush()
-            os.fsync(f.fileno())
+        captured_content = []
+        real_rmtree = shutil.rmtree
 
-        with open(key_p, "rb") as f:
-            overwritten = f.read()
-        self.assertEqual(len(overwritten), orig_len)
-        self.assertNotEqual(overwritten, original)
-        self.assertFalse(overwritten.startswith(b"-----BEGIN PRIVATE KEY-----"))
+        def inspect_and_rmtree(path, *args, **kwargs):
+            if os.path.isfile(key_p):
+                with open(key_p, "rb") as kf:
+                    captured_content.append(kf.read())
+            return real_rmtree(path, *args, **kwargs)
 
+        with patch("shutil.rmtree", side_effect=inspect_and_rmtree):
+            cleanup_ephemeral_tls(temp_dir)
+
+        self.assertEqual(len(captured_content), 1, "shutil.rmtree must be intercepted exactly once")
+        overwritten = captured_content[0]
+        self.assertEqual(len(overwritten), orig_len, "In-place overwrite must preserve key length")
+        self.assertNotEqual(overwritten, original, "Key content must be actively mutated by cleanup_ephemeral_tls")
+        self.assertFalse(
+            overwritten.startswith(b"-----BEGIN PRIVATE KEY-----"),
+            "Key header must be obliterated by cleanup_ephemeral_tls"
+        )
+        self.assertFalse(os.path.exists(temp_dir))
+
+    def test_cleanup_ephemeral_tls_guards_unauthorized_directories(self):
+        """
+        P2 Remediation Verification (API footgun):
+        cleanup_ephemeral_tls must reject directories not created by this module
+        (must start with pq_ratchet_tls_ prefix in the system temp directory).
+        """
+        import os
+        import tempfile
         import shutil
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        from pq_ratchet.web.tls import cleanup_ephemeral_tls
+
+        # Test 1: Non-matching prefix in system temp directory
+        unauthorized_temp = tempfile.mkdtemp(prefix="unauthorized_tls_")
+        try:
+            with self.assertRaises(ValueError):
+                cleanup_ephemeral_tls(unauthorized_temp)
+            self.assertTrue(os.path.isdir(unauthorized_temp))
+        finally:
+            shutil.rmtree(unauthorized_temp, ignore_errors=True)
+
+        # Test 2: System temporary directory itself
+        with self.assertRaises(ValueError):
+            cleanup_ephemeral_tls(tempfile.gettempdir())
 
     def test_index_html_contains_subresource_integrity_attributes(self):
         """
