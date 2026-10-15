@@ -73,10 +73,10 @@ class HybridKEMPublicKey:
 
     def encapsulate(self) -> Tuple[HybridKEMCiphertext, bytes]:
         """
-        Dual encapsulation:
+        Dual encapsulation with SP 800-227 §4.6.3 CCA-preserving combiner:
         1. Encapsulate against ML-KEM-768 PK -> (ss_kem, ct_kem).
         2. Sample ephemeral X25519 keypair, DH with X25519 PK -> ss_ec.
-        3. Combine via HKDF-SHA3-512 over ss_kem || ss_ec.
+        3. Combine via HKDF-SHA3-512 over ss_kem || ss_ec || ct_kem || ct_ec || pk_kem || pk_ec.
         Returns (HybridKEMCiphertext, combined_shared_secret).
         Complexity: O(N log N) for NTT polynomial multiplication + O(1) group scalar mult.
         """
@@ -88,6 +88,7 @@ class HybridKEMPublicKey:
 
             ephem_ec_sk = x25519.X25519PrivateKey.generate()
             ephem_ec_pk = ephem_ec_sk.public_key()
+            ephem_ec_pk_bytes = ephem_ec_pk.public_bytes_raw()
             ss_ec = ephem_ec_sk.exchange(self.x25519_pk)
             ss_ec_buf = bytearray(ss_ec)
 
@@ -95,13 +96,17 @@ class HybridKEMPublicKey:
                 salt=b"",
                 ml_kem_secret=bytes(ss_kem_buf),
                 x25519_secret=bytes(ss_ec_buf),
+                ml_kem_ciphertext=ct_kem,
+                x25519_ciphertext=ephem_ec_pk_bytes,
+                ml_kem_public_key=self.mlkem_pk.public_bytes_raw(),
+                x25519_public_key=self.x25519_pk.public_bytes_raw(),
                 context_info=DOMAIN_HYBRID_KEM,
                 output_len=32,
             )
 
             ciphertext = HybridKEMCiphertext(
                 mlkem_ct=ct_kem,
-                x25519_ephem_pk_bytes=ephem_ec_pk.public_bytes_raw(),
+                x25519_ephem_pk_bytes=ephem_ec_pk_bytes,
             )
             return ciphertext, combined_ss
         finally:
@@ -141,12 +146,10 @@ class HybridKEMPrivateKey:
 
     def decapsulate(self, ciphertext: HybridKEMCiphertext) -> bytes:
         """
-        Dual decapsulation:
+        Dual decapsulation with SP 800-227 §4.6.3 CCA-preserving combiner:
         1. Decapsulate ML-KEM-768 ciphertext -> ss_kem.
         2. Scalar multiply X25519 SK with ephemeral peer X25519 PK -> ss_ec.
-        3. Apply the HKDF-SHA3-512 combiner.
-        This operation composes two standardized primitives; this method has no
-        accompanying proof for the custom hybrid construction.
+        3. Combine via HKDF-SHA3-512 over ss_kem || ss_ec || ct_kem || ct_ec || pk_kem || pk_ec.
         Complexity: O(N log N) + O(1).
         """
         ss_kem_buf = bytearray()
@@ -162,6 +165,10 @@ class HybridKEMPrivateKey:
                 salt=b"",
                 ml_kem_secret=bytes(ss_kem_buf),
                 x25519_secret=bytes(ss_ec_buf),
+                ml_kem_ciphertext=ciphertext.mlkem_ct,
+                x25519_ciphertext=ciphertext.x25519_ephem_pk_bytes,
+                ml_kem_public_key=self.mlkem_sk.public_key().public_bytes_raw(),
+                x25519_public_key=self.x25519_sk.public_key().public_bytes_raw(),
                 context_info=DOMAIN_HYBRID_KEM,
                 output_len=32,
             )

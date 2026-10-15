@@ -49,3 +49,83 @@ const pyDsaScript = [
 
 const pyDsaProc = spawnSync('python', ['-c', pyDsaScript], { encoding: 'utf-8' });
 console.log('Cross-language ML-DSA match:', pyDsaProc.stdout.trim());
+
+// 3. Test Hybrid-KEM: JS keygen -> Python encap -> JS decap
+import {
+  HybridKEMPrivateKey,
+  HybridKEMPublicKey,
+  HybridKEMCiphertext,
+} from './src/pqc-engine.js';
+
+const js_hybrid_sk = HybridKEMPrivateKey.generate();
+const js_hybrid_pk = js_hybrid_sk.publicKey();
+const hybrid_pk_b64 = Buffer.from(js_hybrid_pk.toBytes()).toString('base64');
+
+const pyHybridScript = [
+  'import base64',
+  'from pq_ratchet.primitives.hybrid_kem import HybridKEMPublicKey',
+  `pk_bytes = base64.b64decode("${hybrid_pk_b64}")`,
+  'pk = HybridKEMPublicKey.from_bytes(pk_bytes)',
+  'ct, ss_py = pk.encapsulate()',
+  'print(base64.b64encode(ct.to_bytes()).decode("ascii"))',
+  'print(base64.b64encode(ss_py).decode("ascii"))',
+].join('\n');
+
+const pyHybridProc = spawnSync('python', ['-c', pyHybridScript], { encoding: 'utf-8' });
+if (pyHybridProc.status !== 0) {
+  console.error('Python Hybrid-KEM error:', pyHybridProc.stderr);
+  process.exit(1);
+}
+const hybridLines = pyHybridProc.stdout.trim().split('\n');
+const hybrid_ct = HybridKEMCiphertext.fromBytes(Buffer.from(hybridLines[0].trim(), 'base64'));
+const hybrid_ss_py = Buffer.from(hybridLines[1].trim(), 'base64');
+
+const hybrid_ss_js = js_hybrid_sk.decapsulate(hybrid_ct);
+console.log('Cross-language Hybrid-KEM (JS decap matches Python encap):', Buffer.from(hybrid_ss_js).equals(hybrid_ss_py));
+
+// 4. Test Hybrid-KEM: Python keygen -> JS encap -> Python decap
+import crypto from 'crypto';
+
+const kem_seed = crypto.randomBytes(64);
+const ec_seed = crypto.randomBytes(32);
+
+const pyKeygenScript = [
+  'import base64',
+  'from cryptography.hazmat.primitives.asymmetric import mlkem, x25519',
+  'from pq_ratchet.primitives.hybrid_kem import HybridKEMPrivateKey',
+  `sk_kem = mlkem.MLKEM768PrivateKey.from_seed_bytes(base64.b64decode("${kem_seed.toString('base64')}"))`,
+  `sk_ec = x25519.X25519PrivateKey.from_private_bytes(base64.b64decode("${ec_seed.toString('base64')}"))`,
+  'sk = HybridKEMPrivateKey(sk_kem, sk_ec)',
+  'print(base64.b64encode(sk.public_key().to_bytes()).decode("ascii"))',
+].join('\n');
+
+const pyKeygenProc = spawnSync('python', ['-c', pyKeygenScript], { encoding: 'utf-8' });
+if (pyKeygenProc.status !== 0) {
+  console.error('Python keygen error:', pyKeygenProc.stderr);
+  process.exit(1);
+}
+const py_pk_bytes = Buffer.from(pyKeygenProc.stdout.trim(), 'base64');
+const py_pk = HybridKEMPublicKey.fromBytes(py_pk_bytes);
+const [js_ct, js_ss] = py_pk.encapsulate();
+
+const pyDecapScript = [
+  'import base64',
+  'from cryptography.hazmat.primitives.asymmetric import mlkem, x25519',
+  'from pq_ratchet.primitives.hybrid_kem import HybridKEMPrivateKey, HybridKEMCiphertext',
+  `sk_kem = mlkem.MLKEM768PrivateKey.from_seed_bytes(base64.b64decode("${kem_seed.toString('base64')}"))`,
+  `sk_ec = x25519.X25519PrivateKey.from_private_bytes(base64.b64decode("${ec_seed.toString('base64')}"))`,
+  'sk = HybridKEMPrivateKey(sk_kem, sk_ec)',
+  `ct = HybridKEMCiphertext.from_bytes(base64.b64decode("${Buffer.from(js_ct.toBytes()).toString('base64')}"))`,
+  'ss = sk.decapsulate(ct)',
+  'print(base64.b64encode(ss).decode("ascii"))',
+].join('\n');
+
+const pyDecapProc = spawnSync('python', ['-c', pyDecapScript], { encoding: 'utf-8' });
+if (pyDecapProc.status !== 0) {
+  console.error('Python decap error:', pyDecapProc.stderr);
+  process.exit(1);
+}
+const py_decap_ss = Buffer.from(pyDecapProc.stdout.trim(), 'base64');
+console.log('Cross-language Hybrid-KEM (Python decap matches JS encap):', Buffer.from(js_ss).equals(py_decap_ss));
+
+

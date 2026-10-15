@@ -163,8 +163,25 @@ function readUint32BE(bytes, offset) {
 }
 
 // Post-Quantum Key Derivation Functions
-export function dual_prf_combine(salt, ml_kem_secret, x25519_secret, context_info = DOMAIN_HYBRID_KEM, output_len = 32) {
-  const ikm = concatBytes(ml_kem_secret, x25519_secret);
+export function dual_prf_combine(
+  salt,
+  ml_kem_secret,
+  x25519_secret,
+  ml_kem_ciphertext,
+  x25519_ciphertext,
+  ml_kem_public_key,
+  x25519_public_key,
+  context_info = DOMAIN_HYBRID_KEM,
+  output_len = 32
+) {
+  const ikm = concatBytes(
+    ml_kem_secret,
+    x25519_secret,
+    ml_kem_ciphertext,
+    x25519_ciphertext,
+    ml_kem_public_key,
+    x25519_public_key
+  );
   try {
     const s = (salt && salt.length > 0) ? salt : undefined;
     return hkdf(sha3_512, ikm, s, context_info, output_len);
@@ -172,6 +189,7 @@ export function dual_prf_combine(salt, ml_kem_secret, x25519_secret, context_inf
     zeroize(ikm);
   }
 }
+
 
 export function asymmetric_ratchet_kdf(root_key, combined_shared_secret, context = DOMAIN_ASYM_RATCHET) {
   const derived = hkdf(sha3_512, combined_shared_secret, root_key, context, ROOT_KEY_BYTES + CHAIN_KEY_BYTES);
@@ -436,7 +454,17 @@ export class HybridKEMPublicKey {
       const ephem_ec_pub = x25519.getPublicKey(ephem_ec_priv);
       ss_ec = x25519.getSharedSecret(ephem_ec_priv, this.x25519_pk);
 
-      const combined_ss = dual_prf_combine(new Uint8Array(0), ss_kem, ss_ec, DOMAIN_HYBRID_KEM, 32);
+      const combined_ss = dual_prf_combine(
+        new Uint8Array(0),
+        ss_kem,
+        ss_ec,
+        ct_kem,
+        ephem_ec_pub,
+        this.mlkem_pk,
+        this.x25519_pk,
+        DOMAIN_HYBRID_KEM,
+        32
+      );
       const ct = new HybridKEMCiphertext(ct_kem, ephem_ec_pub);
       return [ct, combined_ss];
     } finally {
@@ -470,7 +498,17 @@ export class HybridKEMPrivateKey {
     try {
       ss_kem = ml_kem768.decapsulate(ciphertext.mlkem_ct, this.mlkem_sk);
       ss_ec = x25519.getSharedSecret(this.x25519_sk, ciphertext.x25519_ephem_pk_bytes);
-      return dual_prf_combine(new Uint8Array(0), ss_kem, ss_ec, DOMAIN_HYBRID_KEM, 32);
+      return dual_prf_combine(
+        new Uint8Array(0),
+        ss_kem,
+        ss_ec,
+        ciphertext.mlkem_ct,
+        ciphertext.x25519_ephem_pk_bytes,
+        this.mlkem_pk,
+        this.x25519_pk,
+        DOMAIN_HYBRID_KEM,
+        32
+      );
     } finally {
       zeroize(ss_kem);
       zeroize(ss_ec);

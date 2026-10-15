@@ -74,25 +74,36 @@ def dual_prf_combine(
     salt: bytes,
     ml_kem_secret: bytes,
     x25519_secret: bytes,
+    ml_kem_ciphertext: bytes,
+    x25519_ciphertext: bytes,
+    ml_kem_public_key: bytes,
+    x25519_public_key: bytes,
     context_info: bytes = DOMAIN_HYBRID_KEM,
     output_len: int = 64,
 ) -> bytes:
     """
-    Hybrid KEM Combiner mapping (SS_kem, SS_ec) -> K via HKDF-SHA3-512.
+    NIST SP 800-227 §4.6.3 CCA-Preserving Hybrid KEM Combiner.
 
     Construction:
-      IKM = SS_kem || SS_ec
+      IKM = SS_kem || SS_ec || CT_kem || CT_ec || PK_kem || PK_ec
       PRK = HMAC-SHA3-512(salt=salt or 0^L, IKM)
       K   = HKDF-Expand(PRK, info=context_info, L=output_len)
 
-    Security scope:
-      - This helper applies HKDF to the concatenated secrets and a context string.
-      - The repository contains no proof that this exact hybrid construction is
-        robust when either component is compromised, especially in the QROM.
-      - An empty salt uses the HKDF implementation's zero-filled default.
+    Security argument:
+      Binding component ciphertexts (CT_kem, CT_ec) and encapsulation public keys
+      (PK_kem, PK_ec) into the KDF input material preserves IND-CCA security of
+      the combined mechanism when at least one component KEM remains secure.
+      SP 800-227 §4.6.3 explicitly warns that the secret-only form K=KDF(K1,K2)
+      does not achieve this property regardless of KDF choice.
+      The context_info label encodes fixed algorithm ordering (ML-KEM-768 before
+      X25519), parameter sets, and protocol version.
     Complexity: O(|IKM| + output_len) using sponge-based SHA3-512.
     """
-    ikm = bytearray(ml_kem_secret + x25519_secret)
+    ikm = bytearray(
+        ml_kem_secret + x25519_secret
+        + ml_kem_ciphertext + x25519_ciphertext
+        + ml_kem_public_key + x25519_public_key
+    )
     try:
         hkdf = HKDF(
             algorithm=hashes.SHA3_512(),
