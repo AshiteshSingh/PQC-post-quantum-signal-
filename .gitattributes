@@ -4,3 +4,5 @@
 pq_ratchet/web/static/manifest.json text eol=lf
 pq_ratchet/web/static/manifest.sig binary
 pq_ratchet/web/static/release_key.pub binary
+*.sh text eol=lf
+
