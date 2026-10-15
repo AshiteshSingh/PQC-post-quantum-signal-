@@ -5,12 +5,16 @@
 [![Symbolic Security Model: ProVerif](https://img.shields.io/badge/Symbolic_Model-ProVerif_2.0-purple.svg)](formal_verification/pq_ratchet.pv)
 [![ML-KEM Parameter Category: NIST Category 3](https://img.shields.io/badge/ML--KEM_Category-NIST_3-red.svg)](#)
 [![Live Web Demo: Render](https://img.shields.io/badge/Live_Demo-Render_Online-46E3B7.svg?logo=render&logoColor=white)](https://pqc-post-quantum-signal.onrender.com/)
+[![Tor v3 Onion: Darknet](https://img.shields.io/badge/Tor_v3_Onion-Online-7D4698.svg?logo=tor-browser&logoColor=white)](http://5uzyskikz4izkx6qp6ffx5ycse7x25dwugem7gente2qsicbcebmejad.onion)
 
 **Security status: experimental and unaudited. Do not use this project to protect production secrets.** It contains implementations of standardized cryptographic primitives, but the handshake, ratchet, browser client, and transport composition are custom and have not received an independent cryptographic review or a security proof. Algorithm names and symbolic modeling do not establish system-level security.
 
 > [!TIP]
-> **Live Web Prototype:** An active cloud deployment is live at **[https://pqc-post-quantum-signal.onrender.com/](https://pqc-post-quantum-signal.onrender.com/)**.
-> Key encapsulation (ML-KEM-768) and digital signatures (ML-DSA-65) execute entirely client-side in the browser.
+> **Live Deployments:**
+> * **Clearnet (Web):** **[https://pqc-post-quantum-signal.onrender.com/](https://pqc-post-quantum-signal.onrender.com/)**
+> * **Tor Darknet (.onion):** `http://5uzyskikz4izkx6qp6ffx5ycse7x25dwugem7gente2qsicbcebmejad.onion` *(Tor Browser exclusive)*
+>
+> All key encapsulation (ML-KEM-768) and digital signatures (ML-DSA-65) execute entirely client-side in the browser.
 
 
 ---
@@ -258,7 +262,8 @@ $ pq-ratchet benchmark
 ### 8. Experimental Web Chat Prototype
 The web client runs ML-KEM-768 and ML-DSA-65 client-side in the browser via Web Crypto and `@noble/post-quantum`. All messages are end-to-end encrypted; the relay server inspects zero plaintext and performs zero server-side decryptions.
 
-* **Live Cloud Deployment:** **[https://pqc-post-quantum-signal.onrender.com/](https://pqc-post-quantum-signal.onrender.com/)**
+* **Live Clearnet Deployment:** **[https://pqc-post-quantum-signal.onrender.com/](https://pqc-post-quantum-signal.onrender.com/)**
+* **Live Tor v3 Onion Service:** `http://5uzyskikz4izkx6qp6ffx5ycse7x25dwugem7gente2qsicbcebmejad.onion` *(Accessible only via Tor Browser)*
 * **Local Loopback Launch:**
   ```bash
   # Launch on local loopback (default port 8000)
