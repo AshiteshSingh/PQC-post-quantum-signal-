@@ -10,6 +10,16 @@ echo "======================================================================"
 # Prepare Tor directories and permissions
 mkdir -p /var/lib/tor/hidden_service
 chmod 700 /var/lib/tor/hidden_service
+
+# Install persistent Tor v3 keys if available
+if [ -d "/app/tor_keys" ] && [ -f "/app/tor_keys/hs_ed25519_secret_key" ]; then
+  echo "[+] Loading permanent Tor v3 cryptographic keys from /app/tor_keys..."
+  cp -f /app/tor_keys/* /var/lib/tor/hidden_service/
+  chmod 600 /var/lib/tor/hidden_service/hs_ed25519_* 2>/dev/null || true
+  chmod 644 /var/lib/tor/hidden_service/hostname 2>/dev/null || true
+  chmod 700 /var/lib/tor/hidden_service
+fi
+
 chown -R debian-tor:debian-tor /var/lib/tor
 
 # Generate dynamic torrc pointing port 80 to the application port

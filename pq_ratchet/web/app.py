@@ -257,6 +257,18 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Cross-Origin-Embedder-Policy"] = "require-corp"
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
 
+        # Advertise Tor v3 Onion counterpart to Tor Browser via RFC / Tor Project standard header
+        onion_path = os.environ.get("ONION_HOSTNAME_FILE", "/var/lib/tor/hidden_service/hostname")
+        if os.path.exists(onion_path):
+            try:
+                with open(onion_path, "r", encoding="utf-8") as f:
+                    onion_host = f.read().strip()
+                    if onion_host:
+                        target_path = request.url.path or "/"
+                        response.headers["Onion-Location"] = f"http://{onion_host}{target_path}"
+            except Exception:
+                pass
+
         if "server" in response.headers:
             del response.headers["server"]
         return response
