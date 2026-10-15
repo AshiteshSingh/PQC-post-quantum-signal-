@@ -17,3 +17,8 @@ dependencies = [
 
 [project.scripts]
 pq-ratchet = "pq_ratchet.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pq_ratchet*"]
+

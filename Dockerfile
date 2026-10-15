@@ -15,7 +15,7 @@ COPY . /app
 RUN sed -i 's/\r$//' /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
 # Install Python requirements and package
-RUN pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir -e .
+RUN pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir .
 
 EXPOSE 8000
 
