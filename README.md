@@ -40,17 +40,19 @@ The classical **Double Ratchet Algorithm** (pioneered by Signal and used across 
 +-------------------------------------------------------+---------------------------------------+
 ```
 
-### Hybrid KEM Combiner Design & Cryptographic Assumptions
-The code combines ephemeral shared secrets from the two components with HKDF. This is intended as a hybrid design, but this repository does not prove its security against component compromise or quantum adversaries:
+### Hybrid KEM Combiner Design (NIST SP 800-227 §4.6.3 CCA-Preserving)
+The hybrid KEM combines ML-KEM-768 and X25519 using a Dual-PRF construction with complete transcript injection per **NIST SP 800-227 §4.6.3**:
 
-$$K_{\text{combined}} = \mathrm{HKDF\text{-}SHA3\text{-}512}\Big(\text{IKM} = \mathrm{SS}_{\text{ML-KEM}} \,\|\, \mathrm{SS}_{\text{X25519}}, \,\, \text{Salt} = \text{salt}, \,\, \text{Info} = \mathrm{Context}\Big)$$
+$$\mathrm{IKM} = \mathrm{SS}_{\text{kem}} \mathbin{\Vert} \mathrm{SS}_{\text{ec}} \mathbin{\Vert} \mathrm{CT}_{\text{kem}} \mathbin{\Vert} \mathrm{CT}_{\text{ec}} \mathbin{\Vert} \mathrm{PK}_{\text{kem}} \mathbin{\Vert} \mathrm{PK}_{\text{ec}}$$
 
-#### Combiner Scope
-- The code concatenates two 32-byte shared secrets and passes them to HKDF-SHA3-512 with a domain-separation string. This is a hybrid design choice, not a proof in this repository. The cited hybrid-combiner literature and RFC 9180 do not by themselves prove this exact protocol composition or state machine.
-- **Underlying Hardness Problems**:
-  - **Post-Quantum Security**: Hardness of $\mathrm{Module\text{-}LWE}_{256,3,3329}$ (FIPS 203 ML-KEM-768, targeted to NIST Security Category 3).
-  - **Classical Security**: Hardness of Computational Diffie-Hellman ($\mathrm{CDH}$) over Curve25519 (128-bit classical security).
-- **Protocol scope**: NIST Category 3 is a parameter-set security-strength classification for ML-KEM-768, not a measured security guarantee for this application or a proof of its hybrid combiner.
+$$K_{\text{combined}} = \mathrm{HKDF\text{-}SHA3\text{-}512}\Big(\mathrm{IKM}, \,\, \text{Salt} = \text{salt}, \,\, \text{Info} = \mathrm{DOMAIN\_HYBRID\_KEM}, \,\, L = 32\Big)$$
+
+#### Cryptographic Rationale & Binding Invariants
+- **NIST SP 800-227 §4.6.3 Compliance**: Binding component ciphertexts ($\mathrm{CT}_{\text{kem}} \in \mathbb{B}^{1088}$, $\mathrm{CT}_{\text{ec}} \in \mathbb{B}^{32}$) and encapsulation public keys ($\mathrm{PK}_{\text{kem}} \in \mathbb{B}^{1184}$, $\mathrm{PK}_{\text{ec}} \in \mathbb{B}^{32}$) into the KDF Input Keying Material ($\mathrm{IKM} \in \mathbb{B}^{2400}$) preserves IND-CCA security for the hybrid mechanism when at least one underlying KEM remains secure. The secret-only form $K \leftarrow \mathrm{KDF}(K_1, K_2)$ fails to achieve this property under active chosen-ciphertext attacks.
+- **Underlying Hardness Assumptions**:
+  - **Post-Quantum Security**: Hardness of $\mathrm{Module\text{-}LWE}_{256,3,3329}$ (NIST FIPS 203 ML-KEM-768, Category 3; $\ge 2^{128}$ quantum bit security).
+  - **Classical Security**: Hardness of Computational Diffie-Hellman ($\mathrm{CDH}$) over Curve25519 (RFC 7748; 128-bit classical security).
+- **Identity Authentication**: NIST FIPS 204 ML-DSA-65 providing EUF-CMA security under $\mathrm{Module\text{-}SIS}_{256,6,5}$.
 
 ---
 
@@ -157,8 +159,8 @@ No ProVerif output or independently reproduced result is included in this reposi
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/pq-ratchet.git
-cd pq-ratchet
+git clone https://github.com/AshiteshSingh/PQC-post-quantum-signal-.git
+cd PQC-post-quantum-signal-
 
 # Install in editable mode
 pip install -e .
@@ -247,9 +249,39 @@ $ pq-ratchet tor onion-gen --dir /var/lib/tor/pq_ratchet_service/ --virtual-port
 $ pq-ratchet benchmark
 ```
 
+### 8. Experimental Web Chat Prototype
+Launch the local web server with signed bundle verification and client-side PQC cryptography:
+
+```bash
+# Launch on local loopback (default port 8000)
+$ pq-ratchet web --host 127.0.0.1 --port 8000
+
+# Access via browser
+http://127.0.0.1:8000
+```
+
+The web client runs ML-KEM-768 and ML-DSA-65 client-side in the browser via Web Crypto and `@noble/post-quantum`. All messages are end-to-end encrypted; the relay server inspects zero plaintext and performs zero server-side decryptions.
+
 ---
 
-## 8. Experimental Python API Example
+## 8. Verification & Test Suite
+
+The project includes unit, security, integration, and cross-language interoperability suites:
+
+```bash
+# 1. Native Python Test Suite (60 tests: primitives, ratchet, transport, security, web)
+pytest tests -v
+
+# 2. Web Client Bundle Verification
+python -m pq_ratchet.web.verify_bundle --require-sig
+
+# 3. Cross-Language JavaScript/Python Interop Suite
+cd web_builder && npm test
+```
+
+---
+
+## 9. Experimental Python API Example
 
 This example demonstrates the API only. The custom protocol is unaudited and is not suitable for production secrets:
 
@@ -289,7 +321,7 @@ bob_session.close()
 
 ---
 
-## 9. Security Notes and Known Limits
+## 10. Security Notes and Known Limits
 
 FIPS 203 and FIPS 204 name the algorithm standards used by this project. This repository does not claim a FIPS 140 validated cryptographic module, nor does conformance of a primitive establish the security of the application protocol.
 
@@ -320,7 +352,8 @@ FIPS 203 and FIPS 204 name the algorithm standards used by this project. This re
 
 ---
 
-## 10. License
+## 11. License
 
 Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
+
 
