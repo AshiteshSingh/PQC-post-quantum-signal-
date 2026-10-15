@@ -1,9 +1,8 @@
 services:
   - type: web
-    name: pq-ratchet-web
-    runtime: python
-    buildCommand: pip install -r requirements.txt && pip install -e .
-    startCommand: pq-ratchet web --host 0.0.0.0 --port $PORT --allow-insecure-http
+    name: pqc-post-quantum-signal
+    runtime: docker
+    dockerfilePath: ./Dockerfile
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.9
+      - key: PORT
+        value: 8000

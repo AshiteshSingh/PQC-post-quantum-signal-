@@ -409,6 +409,31 @@ async def serve_release_key():
 
 
 
+@app.get("/api/onion")
+async def get_onion_service_info():
+    """
+    Returns the Tor v3 .onion hostname and URL if Tor hidden service is active.
+    """
+    onion_path = os.environ.get("ONION_HOSTNAME_FILE", "/var/lib/tor/hidden_service/hostname")
+    if os.path.exists(onion_path):
+        try:
+            with open(onion_path, "r", encoding="utf-8") as f:
+                addr = f.read().strip()
+                if addr:
+                    return JSONResponse({
+                        "onion_address": f"http://{addr}",
+                        "hostname": addr,
+                        "tor_active": True,
+                    })
+        except Exception:
+            pass
+    return JSONResponse({
+        "onion_address": None,
+        "hostname": None,
+        "tor_active": False,
+    })
+
+
 @app.get("/api/online-users")
 async def list_online_users():
     await cleanup_expired_sessions()
