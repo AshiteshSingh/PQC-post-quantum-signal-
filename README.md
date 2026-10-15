@@ -4,8 +4,14 @@
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-green.svg)](LICENSE)
 [![Symbolic Security Model: ProVerif](https://img.shields.io/badge/Symbolic_Model-ProVerif_2.0-purple.svg)](formal_verification/pq_ratchet.pv)
 [![ML-KEM Parameter Category: NIST Category 3](https://img.shields.io/badge/ML--KEM_Category-NIST_3-red.svg)](#)
+[![Live Web Demo: Render](https://img.shields.io/badge/Live_Demo-Render_Online-46E3B7.svg?logo=render&logoColor=white)](https://pqc-post-quantum-signal.onrender.com/)
 
 **Security status: experimental and unaudited. Do not use this project to protect production secrets.** It contains implementations of standardized cryptographic primitives, but the handshake, ratchet, browser client, and transport composition are custom and have not received an independent cryptographic review or a security proof. Algorithm names and symbolic modeling do not establish system-level security.
+
+> [!TIP]
+> **Live Web Prototype:** An active cloud deployment is live at **[https://pqc-post-quantum-signal.onrender.com/](https://pqc-post-quantum-signal.onrender.com/)**.
+> Key encapsulation (ML-KEM-768) and digital signatures (ML-DSA-65) execute entirely client-side in the browser.
+
 
 ---
 
@@ -250,17 +256,17 @@ $ pq-ratchet benchmark
 ```
 
 ### 8. Experimental Web Chat Prototype
-Launch the local web server with signed bundle verification and client-side PQC cryptography:
-
-```bash
-# Launch on local loopback (default port 8000)
-$ pq-ratchet web --host 127.0.0.1 --port 8000
-
-# Access via browser
-http://127.0.0.1:8000
-```
-
 The web client runs ML-KEM-768 and ML-DSA-65 client-side in the browser via Web Crypto and `@noble/post-quantum`. All messages are end-to-end encrypted; the relay server inspects zero plaintext and performs zero server-side decryptions.
+
+* **Live Cloud Deployment:** **[https://pqc-post-quantum-signal.onrender.com/](https://pqc-post-quantum-signal.onrender.com/)**
+* **Local Loopback Launch:**
+  ```bash
+  # Launch on local loopback (default port 8000)
+  $ pq-ratchet web --host 127.0.0.1 --port 8000
+
+  # Access via browser
+  http://127.0.0.1:8000
+  ```
 
 ---
 
