@@ -22,3 +22,7 @@ pq-ratchet = "pq_ratchet.cli:main"
 where = ["."]
 include = ["pq_ratchet*"]
 
+[tool.setuptools.package-data]
+"pq_ratchet.web" = ["static/*"]
+
+

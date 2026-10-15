@@ -14,8 +14,8 @@ COPY . /app
 # Ensure shell script line endings are clean LF and executable
 RUN sed -i 's/\r$//' /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
-# Install Python requirements and package
-RUN pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir .
+# Install Python requirements and package in editable mode
+RUN pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir -e .
 
 EXPOSE 8000
 
