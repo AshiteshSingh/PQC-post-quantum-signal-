@@ -16,6 +16,9 @@
 >
 > All key encapsulation (ML-KEM-768) and digital signatures (ML-DSA-65) execute entirely client-side in the browser.
 
+> [!IMPORTANT]
+> **Full Web Application in Active Development:** The current live web deployment is an experimental cryptographic prototype. A fully developed, production-grade web application with modern UI/UX, contact management, offline message queuing, multi-device support, and native WebRTC transport is actively in development and will be released soon.
+
 > [!NOTE]
 > **Instance Inactivity & Cold Starts:** Because this prototype is hosted on Render's free tier, the container automatically spins down after 15 minutes of inactivity.
 > * If the Clearnet site or `.onion` service appears offline (*"Onion site not found"*), visit the [Clearnet URL](https://pqc-post-quantum-signal.onrender.com/) once.
@@ -224,18 +227,49 @@ $ pq-ratchet pipe recv --listen 0.0.0.0:9000 --key server.key --peer-pub client.
 $ cat confidential_dump.sql.gz | pq-ratchet pipe send --to 192.168.1.50:9000 --key client.key --peer-pub server.pub
 ```
 
-### 4. Experimental Terminal Chat
-Peer-to-peer chat example using the custom ratchet:
+### 4. Global E2EE Terminal Chat (Anywhere in the World)
+Two people anywhere on the globe (e.g., USA and India) behind standard home Wi-Fi, CGNAT, or mobile hotspots can chat directly in their terminals with zero server reliance.
 
+#### Step 1: Install & Generate Keys
+Both users install the package and generate their NIST FIPS 204 (ML-DSA-65) identity keypair:
 ```bash
-# Node A (Listen)
+# Person A (e.g. Alice in USA)
+$ pq-ratchet keygen --out alice
+
+# Person B (e.g. Bob in India)
+$ pq-ratchet keygen --out bob
+```
+This produces `alice.key` / `alice.pub` and `bob.key` / `bob.pub`. Private keys are passphrase-protected and never leave the local machine.
+
+#### Step 2: Exchange Public Keys
+Alice shares `alice.pub` with Bob, and Bob shares `bob.pub` with Alice (via Signal, email, USB, Discord, etc.).
+
+#### Step 3: Connect Globally (Choose Method A or B)
+
+##### Method A: 100% Global NAT Bypassing via Tor (Recommended — Zero Router Setup)
+Tor hidden services eliminate the need for public IP addresses or port forwarding, allowing connections through any home firewall or ISP CGNAT:
+
+1. **Alice (USA) exposes port 9000 as a Tor v3 hidden service and listens:**
+   ```bash
+   # Generates Tor configuration snippet and outputs Alice's .onion address
+   $ pq-ratchet tor onion-gen --dir /var/lib/tor/pq_chat/ --virtual-port 9000 --target-port 9000
+
+   # Alice starts listening on local port 9000
+   $ pq-ratchet chat listen --addr 127.0.0.1:9000 --key alice.key --peer-pub bob.pub
+   ```
+2. **Bob (India) connects across the world through the Tor network:**
+   ```bash
+   $ pq-ratchet chat connect --addr <alice_onion_address>.onion:9000 --key bob.key --peer-pub alice.pub --via-tor
+   ```
+
+##### Method B: Direct IP / Mesh VPN (Tailscale / WireGuard)
+If either peer has a public IP with port forwarding, or both are on a private virtual mesh like [Tailscale](https://tailscale.com/):
+```bash
+# Alice listens
 $ pq-ratchet chat listen --addr 0.0.0.0:9000 --key alice.key --peer-pub bob.pub
 
-# Node B (Connect directly)
-$ pq-ratchet chat connect --addr 192.168.1.50:9000 --key bob.key --peer-pub alice.pub
-
-# Node B (Connect anonymously via Tor to a .onion endpoint or clearnet host)
-$ pq-ratchet chat connect --addr expyuzz...onion:9000 --key bob.key --peer-pub alice.pub --via-tor
+# Bob connects directly to Alice's Public IP or Tailscale IP
+$ pq-ratchet chat connect --addr 100.85.12.34:9000 --key bob.key --peer-pub alice.pub
 ```
 
 ### 5. Experimental Peer-to-Peer (P2P) Overlay
@@ -267,6 +301,9 @@ $ pq-ratchet benchmark
 
 ### 8. Experimental Web Chat Prototype
 The web client runs ML-KEM-768 and ML-DSA-65 client-side in the browser via Web Crypto and `@noble/post-quantum`. All messages are end-to-end encrypted; the relay server inspects zero plaintext and performs zero server-side decryptions.
+
+> [!NOTE]
+> **Production Web Application In Development:** A fully developed, production-grade web application with modern responsive UI/UX, contact books, offline asynchronous messaging, multi-device support, and browser-to-browser P2P WebRTC data channels is actively in development and will be released soon.
 
 * **Live Clearnet Deployment:** **[https://pqc-post-quantum-signal.onrender.com/](https://pqc-post-quantum-signal.onrender.com/)** *(Free instance spins down after 15m inactivity; allow ~50s for first cold start)*
 * **Live Tor v3 Onion Service:** `http://b4olypmhg7bwxoudybnrol7d77bojvdlueyzpccr2576oax2uoc77yyd.onion` *(Accessible only via Tor Browser; wakes up when clearnet URL is pinged)*
