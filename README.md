@@ -16,6 +16,12 @@
 >
 > All key encapsulation (ML-KEM-768) and digital signatures (ML-DSA-65) execute entirely client-side in the browser.
 
+> [!NOTE]
+> **Instance Inactivity & Cold Starts:** Because this prototype is hosted on Render's free tier, the container automatically spins down after 15 minutes of inactivity.
+> * If the Clearnet site or `.onion` service appears offline (*"Onion site not found"*), visit the [Clearnet URL](https://pqc-post-quantum-signal.onrender.com/) once.
+> * This triggers an HTTPS wake-up packet; the container and Tor daemon will fully initialize in **~30–50 seconds**.
+> * The **CLI tool does not depend on this web server** and can be run entirely offline or peer-to-peer at any time.
+
 
 ---
 
@@ -262,8 +268,8 @@ $ pq-ratchet benchmark
 ### 8. Experimental Web Chat Prototype
 The web client runs ML-KEM-768 and ML-DSA-65 client-side in the browser via Web Crypto and `@noble/post-quantum`. All messages are end-to-end encrypted; the relay server inspects zero plaintext and performs zero server-side decryptions.
 
-* **Live Clearnet Deployment:** **[https://pqc-post-quantum-signal.onrender.com/](https://pqc-post-quantum-signal.onrender.com/)**
-* **Live Tor v3 Onion Service:** `http://b4olypmhg7bwxoudybnrol7d77bojvdlueyzpccr2576oax2uoc77yyd.onion` *(Accessible only via Tor Browser)*
+* **Live Clearnet Deployment:** **[https://pqc-post-quantum-signal.onrender.com/](https://pqc-post-quantum-signal.onrender.com/)** *(Free instance spins down after 15m inactivity; allow ~50s for first cold start)*
+* **Live Tor v3 Onion Service:** `http://b4olypmhg7bwxoudybnrol7d77bojvdlueyzpccr2576oax2uoc77yyd.onion` *(Accessible only via Tor Browser; wakes up when clearnet URL is pinged)*
 * **Local Loopback Launch:**
   ```bash
   # Launch on local loopback (default port 8000)
