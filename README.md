@@ -7,7 +7,11 @@
 [![Live Web Demo: Render](https://img.shields.io/badge/Live_Demo-Render_Online-46E3B7.svg?logo=render&logoColor=white)](https://pqc-post-quantum-signal.onrender.com/)
 [![Tor v3 Onion: Darknet](https://img.shields.io/badge/Tor_v3_Onion-Online-7D4698.svg?logo=tor-browser&logoColor=white)](http://b4olypmhg7bwxoudybnrol7d77bojvdlueyzpccr2576oax2uoc77yyd.onion)
 
-**Security status: experimental and unaudited. Do not use this project to protect production secrets.** It contains implementations of standardized cryptographic primitives, but the handshake, ratchet, browser client, and transport composition are custom and have not received an independent cryptographic review or a security proof. Algorithm names and symbolic modeling do not establish system-level security.
+> [!CAUTION]
+> **Security Status & Operational Scope:**
+> * **Native CLI Core:** Research-grade, functional implementation of NIST FIPS 203/204 hybrid ratchets with encrypted PKCS#8 identity key isolation and direct Tor SOCKS5 transport integration.
+> * **Web Client Prototype:** Experimental browser-based proof-of-concept executing client-side Web Crypto and JavaScript.
+> * **Audit Status:** While the mathematical primitives follow NIST FIPS 203/204 and SP 800-227 standards, the custom handshake composition, state machines, and transport implementations have **not** undergone an independent commercial third-party security audit. Do not deploy this project to protect classified, commercial, or life-critical secrets.
 
 > [!TIP]
 > **Live Deployments:**
